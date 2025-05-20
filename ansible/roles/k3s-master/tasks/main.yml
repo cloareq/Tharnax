@@ -1,0 +1,71 @@
+---
+# Tasks for installing K3s on the master node
+
+- name: Check if K3s is already installed
+  stat:
+    path: /usr/local/bin/k3s
+  register: k3s_binary
+
+- name: Check if K3s is running
+  shell: "systemctl is-active k3s.service || echo 'not-running'"
+  register: k3s_service_status
+  changed_when: false
+  failed_when: false
+
+- name: Download K3s installation script
+  get_url:
+    url: https://get.k3s.io
+    dest: /tmp/k3s-install.sh
+    mode: '0755'
+  when: not k3s_binary.stat.exists or k3s_service_status.stdout == 'not-running'
+
+- name: Install K3s as server (master)
+  environment:
+    INSTALL_K3S_EXEC: "--write-kubeconfig-mode 644 --disable-cloud-controller --disable=traefik"
+  shell: >
+    curl -sfL https://get.k3s.io | sh -s - 
+    --write-kubeconfig-mode 644 
+    --disable-cloud-controller 
+    --disable=traefik
+  register: k3s_server_install
+  async: 600  # 10 minute timeout
+  poll: 15    # Check every 15 seconds
+  when: not k3s_binary.stat.exists or k3s_service_status.stdout == 'not-running'
+
+- name: Display K3s installation result
+  debug:
+    var: k3s_server_install
+  when: k3s_server_install is defined and k3s_server_install.changed
+
+- name: Wait for node-token to be generated
+  wait_for:
+    path: /var/lib/rancher/k3s/server/node-token
+    state: present
+    delay: 5
+    timeout: 60
+
+- name: Read K3s token
+  slurp:
+    src: /var/lib/rancher/k3s/server/node-token
+  register: k3s_token_b64
+
+- name: Check kubectl works
+  shell: kubectl get nodes
+  register: kubectl_check
+  changed_when: false
+  become: true
+  ignore_errors: true
+
+- name: Show node status
+  debug:
+    var: kubectl_check.stdout_lines
+  when: kubectl_check is defined and kubectl_check.rc == 0
+
+- name: Set facts for k3s installation
+  set_fact:
+    k3s_token: "{{ k3s_token_b64.content | b64decode | trim }}"
+    master_ip: "{{ hostvars[inventory_hostname]['ansible_host'] }}"
+
+- name: Ensure token and master IP are set (debugging)
+  debug:
+    msg: "K3s master installed at {{ master_ip }} with token {{ k3s_token[:5] }}..." 

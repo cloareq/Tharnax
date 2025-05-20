@@ -1,6 +1,22 @@
 ---
-# Ansible playbook for Tharnax K3s deployment
-# This is a placeholder that will be implemented in future steps
+# Tharnax K3s Cluster Deployment Playbook
+
+- name: Preflight Check - Verify hosts are reachable
+  hosts: k3s_cluster
+  gather_facts: no
+  tags: preflight
+  tasks:
+    - name: Check if hosts are reachable
+      ping:
+      register: ping_result
+      ignore_errors: yes
+      tags: preflight
+
+    - name: Fail if host is unreachable
+      fail:
+        msg: "Host {{ inventory_hostname }} ({{ ansible_host }}) is unreachable. Please check connectivity and SSH configuration."
+      when: ping_result.failed
+      tags: preflight
 
 - name: Install K3s on Master Node
   hosts: master

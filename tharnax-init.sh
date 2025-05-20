@@ -43,6 +43,20 @@ parse_args() {
     done
 }
 
+# Ensure required packages are installed
+ensure_prerequisites() {
+    echo -e "${BLUE}Ensuring required packages are installed...${NC}"
+    
+    # Check for curl
+    if ! command -v curl >/dev/null 2>&1; then
+        echo -e "${YELLOW}Installing curl...${NC}"
+        sudo apt update
+        sudo apt install -y curl
+    else
+        echo -e "${GREEN}curl is already installed.${NC}"
+    fi
+}
+
 print_banner() {
     echo -e "${GREEN}"
     echo "╔══════════════════════════════════════════════════════════════╗"
@@ -163,17 +177,32 @@ collect_worker_info() {
         
         if [ -n "$previous_ip" ]; then
             echo -e "Previous Worker $i IP: ${GREEN}${previous_ip}${NC}"
-            read -p "Use this IP? (Y/n): " confirm
-            if [[ "$confirm" =~ ^[Nn] ]]; then
-                previous_ip=""
+            read -p "Use this IP? (Y/n or enter new IP): " confirm
+            
+            # Check if input matches IP pattern first (user entered a new IP directly)
+            if [[ $confirm =~ $IP_REGEX ]]; then
+                WORKER_IPS[$i]="$confirm"
+                eval "WORKER_IP_$i=\"$confirm\""
+                echo -e "${GREEN}Updated Worker $i IP to: ${confirm}${NC}"
+            elif [[ "$confirm" =~ ^[Nn] ]]; then
+                # User wants to change but didn't provide the IP yet
+                read -p "Enter new IP for Worker $i: " WORKER_IP
+                
+                if ! [[ $WORKER_IP =~ $IP_REGEX ]]; then
+                    echo -e "${YELLOW}Warning: Worker $i IP address format appears to be invalid.${NC}"
+                fi
+                
+                WORKER_IPS[$i]="$WORKER_IP"
+                eval "WORKER_IP_$i=\"$WORKER_IP\""
             else
+                # User entered Y or just pressed Enter (default)
                 WORKER_IPS[$i]="$previous_ip"
                 echo -e "${GREEN}Using saved Worker $i IP: ${previous_ip}${NC}"
-                continue
             fi
+            continue
         fi
         
-        if [ -z "$previous_ip" ]; then
+        if [ -z "${WORKER_IPS[$i]}" ]; then
             read -p "Enter Worker $i IP address: " WORKER_IP
             
             if ! [[ $WORKER_IP =~ $IP_REGEX ]]; then
@@ -362,6 +391,25 @@ create_sample_playbook() {
         
         cat > ansible/playbook.yml << EOF
 ---
+# Tharnax K3s Cluster Deployment Playbook
+
+- name: Preflight Check - Verify hosts are reachable
+  hosts: k3s_cluster
+  gather_facts: no
+  tags: preflight
+  tasks:
+    - name: Check if hosts are reachable
+      ping:
+      register: ping_result
+      ignore_errors: yes
+      tags: preflight
+
+    - name: Fail if host is unreachable
+      fail:
+        msg: "Host {{ inventory_hostname }} ({{ ansible_host }}) is unreachable. Please check connectivity and SSH configuration."
+      when: ping_result.failed
+      tags: preflight
+
 - name: Install K3s on Master Node
   hosts: master
   become: true
@@ -376,7 +424,150 @@ create_sample_playbook() {
 EOF
 
         echo -e "${GREEN}Sample playbook created at ansible/playbook.yml${NC}"
-        echo -e "${YELLOW}Note: This is a placeholder. You'll need to implement the actual roles.${NC}"
+        
+        # Create role directories if they don't exist
+        mkdir -p ansible/roles/k3s-master/tasks
+        mkdir -p ansible/roles/k3s-agent/tasks
+        
+        # Create basic task files for the roles if they don't exist
+        if [ ! -f "ansible/roles/k3s-master/tasks/main.yml" ]; then
+            cat > ansible/roles/k3s-master/tasks/main.yml << EOF
+---
+# Tasks for installing K3s on the master node
+
+- name: Check if K3s is already installed
+  stat:
+    path: /usr/local/bin/k3s
+  register: k3s_binary
+
+- name: Check if K3s is running
+  shell: "systemctl is-active k3s.service || echo 'not-running'"
+  register: k3s_service_status
+  changed_when: false
+  failed_when: false
+
+- name: Download K3s installation script
+  get_url:
+    url: https://get.k3s.io
+    dest: /tmp/k3s-install.sh
+    mode: '0755'
+  when: not k3s_binary.stat.exists or k3s_service_status.stdout == 'not-running'
+
+- name: Install K3s as server (master)
+  environment:
+    INSTALL_K3S_EXEC: "--write-kubeconfig-mode 644 --disable-cloud-controller --disable=traefik"
+  shell: >
+    curl -sfL https://get.k3s.io | sh -s - 
+    --write-kubeconfig-mode 644 
+    --disable-cloud-controller 
+    --disable=traefik
+  register: k3s_server_install
+  async: 600  # 10 minute timeout
+  poll: 15    # Check every 15 seconds
+  when: not k3s_binary.stat.exists or k3s_service_status.stdout == 'not-running'
+
+- name: Display K3s installation result
+  debug:
+    var: k3s_server_install
+  when: k3s_server_install is defined and k3s_server_install.changed
+
+- name: Wait for node-token to be generated
+  wait_for:
+    path: /var/lib/rancher/k3s/server/node-token
+    state: present
+    delay: 5
+    timeout: 60
+
+- name: Read K3s token
+  slurp:
+    src: /var/lib/rancher/k3s/server/node-token
+  register: k3s_token_b64
+
+- name: Check kubectl works
+  shell: kubectl get nodes
+  register: kubectl_check
+  changed_when: false
+  become: true
+  ignore_errors: true
+
+- name: Show node status
+  debug:
+    var: kubectl_check.stdout_lines
+  when: kubectl_check is defined and kubectl_check.rc == 0
+
+- name: Set facts for k3s installation
+  set_fact:
+    k3s_token: "{{ k3s_token_b64.content | b64decode | trim }}"
+    master_ip: "{{ hostvars[inventory_hostname]['ansible_host'] }}"
+
+- name: Ensure token and master IP are set (debugging)
+  debug:
+    msg: "K3s master installed at {{ master_ip }} with token {{ k3s_token[:5] }}..."
+EOF
+        fi
+        
+        if [ ! -f "ansible/roles/k3s-agent/tasks/main.yml" ]; then
+            cat > ansible/roles/k3s-agent/tasks/main.yml << EOF
+---
+# Tasks for installing K3s on worker nodes
+
+- name: Check if K3s is already installed
+  stat:
+    path: /usr/local/bin/k3s
+  register: k3s_binary
+
+- name: Check if K3s agent is running
+  shell: "systemctl is-active k3s-agent.service || echo 'not-running'"
+  register: k3s_agent_service_status
+  changed_when: false
+  failed_when: false
+
+- name: Get facts from master node
+  set_fact:
+    k3s_token: "{{ hostvars[groups['master'][0]]['k3s_token'] }}"
+    master_ip: "{{ hostvars[groups['master'][0]]['master_ip'] }}"
+
+- name: Ensure token and master IP are available (debugging)
+  debug:
+    msg: "Installing K3s agent connecting to {{ master_ip }} with token {{ k3s_token[:5] }}..."
+
+- name: Install K3s as agent (worker)
+  shell: >
+    curl -sfL https://get.k3s.io | 
+    K3S_URL=https://{{ master_ip }}:6443 
+    K3S_TOKEN={{ k3s_token }} 
+    sh -s -
+  register: k3s_agent_install
+  async: 600  # 10 minute timeout
+  poll: 15    # Check every 15 seconds
+  when: not k3s_binary.stat.exists or k3s_agent_service_status.stdout == 'not-running'
+
+- name: Display K3s agent installation result
+  debug:
+    var: k3s_agent_install
+  when: k3s_agent_install is defined and k3s_agent_install.changed
+
+- name: Wait for agent to register with server
+  wait_for:
+    path: /var/lib/rancher/k3s/agent/kubelet.kubeconfig
+    state: present
+    delay: 5
+    timeout: 60
+  ignore_errors: true
+
+- name: Verify K3s agent service status
+  shell: "systemctl status k3s-agent.service"
+  register: agent_status
+  changed_when: false
+  failed_when: false
+  ignore_errors: true
+
+- name: Show agent status
+  debug:
+    var: agent_status.stdout_lines
+  when: agent_status is defined
+EOF
+        fi
     fi
 }
 
@@ -388,16 +579,26 @@ run_ansible() {
         cd ansible
         echo -e "${YELLOW}You will be prompted for the SSH password and the sudo password.${NC}"
         echo -e "${YELLOW}If they are the same, just enter the same password twice.${NC}"
-        ANSIBLE_BECOME_PASS_PROMPT="SUDO password: " ansible-playbook -i inventory.ini playbook.yml --ask-pass --ask-become-pass
+        
+        # Run the entire playbook with both SSH and sudo password prompting
+        ansible-playbook -i inventory.ini playbook.yml --ask-pass --ask-become-pass
+        
+        cd ..
     else
         cd ansible
-        ansible-playbook -i inventory.ini playbook.yml
+        echo -e "${YELLOW}You will be prompted for the sudo password.${NC}"
+        
+        # Run the entire playbook with sudo password prompting
+        ansible-playbook -i inventory.ini playbook.yml --ask-become-pass
+        
+        cd ..
     fi
 }
 
 uninstall() {
     echo -e "${RED}UNINSTALL MODE${NC}"
     echo -e "${YELLOW}This will uninstall K3s from all nodes and clean up Tharnax files.${NC}"
+    echo -e "${YELLOW}System packages like curl will remain installed.${NC}"
     echo -e "${YELLOW}Please confirm this action.${NC}"
     read -p "Are you sure you want to uninstall? (yes/No): " confirm
     if [[ "$confirm" != "yes" ]]; then
@@ -468,11 +669,12 @@ EOF
             cd ansible
             echo -e "${YELLOW}You will be prompted for the SSH password and the sudo password.${NC}"
             echo -e "${YELLOW}If they are the same, just enter the same password twice.${NC}"
-            ANSIBLE_BECOME_PASS_PROMPT="SUDO password: " ansible-playbook -i inventory.ini uninstall/uninstall.yml --ask-pass --ask-become-pass
+            ansible-playbook -i inventory.ini uninstall/uninstall.yml --ask-pass --ask-become-pass
             cd ..
         else
             cd ansible
-            ansible-playbook -i inventory.ini uninstall/uninstall.yml
+            echo -e "${YELLOW}You will be prompted for the sudo password.${NC}"
+            ansible-playbook -i inventory.ini uninstall/uninstall.yml --ask-become-pass
             cd ..
         fi
     fi
@@ -482,6 +684,7 @@ EOF
     files_to_remove=(
         "$CONFIG_FILE"
         "ansible/inventory.ini"
+        "ansible/uninstall/uninstall.yml"
     )
     
     for file in "${files_to_remove[@]}"; do
@@ -492,6 +695,7 @@ EOF
     done
     
     echo -e "${YELLOW}Do you want to remove packages installed by Tharnax?${NC}"
+    echo -e "${YELLOW}This will remove Ansible and sshpass, but NOT curl.${NC}"
     read -p "Remove Ansible and sshpass? (y/N): " remove_packages
     if [[ "$remove_packages" =~ ^[Yy] ]]; then
         echo "Removing packages..."
@@ -513,6 +717,9 @@ if [ "$UNINSTALL_MODE" = true ]; then
     uninstall
     exit 0
 fi
+
+# Install prerequisites
+ensure_prerequisites
 
 echo -e "${BLUE}Checking for saved configuration...${NC}"
 unset WORKER_IPS
@@ -543,9 +750,9 @@ echo ""
 echo -e "${GREEN}Configuration complete!${NC}"
 echo ""
 echo -e "${YELLOW}Ready to run Ansible playbook to deploy K3s.${NC}"
-read -p "Proceed with deployment? (y/N): " proceed
+read -p "Proceed with deployment? (Y/n): " proceed
 
-if [[ "$proceed" =~ ^[Yy] ]]; then
+if [[ -z "$proceed" || "$proceed" =~ ^[Yy] ]]; then
     run_ansible
     echo -e "${GREEN}Tharnax initialization complete!${NC}"
 else
