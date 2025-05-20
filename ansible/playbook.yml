@@ -1,0 +1,15 @@
+---
+# Ansible playbook for Tharnax K3s deployment
+# This is a placeholder that will be implemented in future steps
+
+- name: Install K3s on Master Node
+  hosts: master
+  become: true
+  roles:
+    - k3s-master
+
+- name: Install K3s on Worker Nodes
+  hosts: workers
+  become: true
+  roles:
+    - k3s-agent 

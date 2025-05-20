@@ -172,3 +172,14 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Tharnax specific
+.tharnax.conf
+ansible/inventory.ini
+*.key
+*.pem
+*.password
+*_password
+*secrets*
+.ssh/
+.vault_pass
