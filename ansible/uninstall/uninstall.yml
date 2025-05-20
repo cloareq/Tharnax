@@ -1,0 +1,36 @@
+---
+- name: Uninstall K3s from all nodes
+  hosts: k3s_cluster
+  become: true
+  tasks:
+    - name: Check if K3s uninstall script exists
+      stat:
+        path: /usr/local/bin/k3s-uninstall.sh
+      register: k3s_uninstall_script
+    
+    - name: Check if K3s agent uninstall script exists
+      stat:
+        path: /usr/local/bin/k3s-agent-uninstall.sh
+      register: k3s_agent_uninstall_script
+    
+    - name: Run K3s uninstall script if exists
+      command: /usr/local/bin/k3s-uninstall.sh
+      when: k3s_uninstall_script.stat.exists
+    
+    - name: Run K3s agent uninstall script if exists
+      command: /usr/local/bin/k3s-agent-uninstall.sh
+      when: k3s_agent_uninstall_script.stat.exists
+    
+    - name: Remove K3s data directory
+      file:
+        path: /var/lib/rancher/k3s
+        state: absent
+
+    - name: Remove K3s configuration
+      file:
+        path: "{{ item }}"
+        state: absent
+      with_items:
+        - /etc/rancher/k3s
+        - /var/lib/kubelet
+        - /var/lib/rancher
