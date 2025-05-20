@@ -28,8 +28,8 @@ Tharnax is an automation tool designed to simplify the deployment of K3s Kuberne
 1. Clone this repository or download the script:
 
 ```bash
-git clone https://github.com/yourusername/tharnax.git
-cd tharnax
+git clone https://github.com/cloareq/Tharnax.git
+cd Tharnax
 ```
 
 2. Make the script executable:
