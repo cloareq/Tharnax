@@ -27,8 +27,17 @@ const Dashboard = () => {
                 setClusterStats(response.data);
                 setError(null);
             } catch (err) {
-                setError('Failed to fetch cluster status. Please check if the API is running.');
                 console.error('Error fetching cluster status:', err);
+                setError('Failed to fetch cluster status. Make sure your backend is running and has proper access to the Kubernetes API.');
+                // Set some mock data for development
+                if (process.env.NODE_ENV === 'development') {
+                    setClusterStats({
+                        status: 'error',
+                        node_count: 'N/A',
+                        k3s_version: 'N/A',
+                        pod_count: 'N/A'
+                    });
+                }
             } finally {
                 setLoading(false);
             }
@@ -51,34 +60,43 @@ const Dashboard = () => {
 
             {error && (
                 <div className="mb-6 p-4 bg-red-900/30 border border-red-700 rounded-md text-red-300">
-                    {error}
+                    <p className="font-bold mb-2">Connection Error</p>
+                    <p>{error}</p>
                 </div>
             )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                 <StatusCard
                     title="Nodes"
-                    value={clusterStats.node_count}
+                    value={loading ? 'Loading...' : clusterStats.node_count}
                     icon={ServerIcon}
                     color="blue"
                 />
                 <StatusCard
                     title="Pods"
-                    value={clusterStats.pod_count}
+                    value={loading ? 'Loading...' : clusterStats.pod_count}
                     icon={CircleStackIcon}
                     color="green"
                 />
                 <StatusCard
                     title="K3s Version"
-                    value={clusterStats.k3s_version}
+                    value={loading ? 'Loading...' : clusterStats.k3s_version}
                     icon={CodeBracketIcon}
                     color="purple"
                 />
                 <StatusCard
                     title="Status"
-                    value={clusterStats.status === 'running' ? 'Healthy' : 'Issues'}
+                    value={
+                        loading
+                            ? 'Loading...'
+                            : (clusterStats.status === 'running' ? 'Healthy' : 'Issues')
+                    }
                     icon={CpuChipIcon}
-                    color={clusterStats.status === 'running' ? 'green' : 'red'}
+                    color={
+                        loading
+                            ? 'gray'
+                            : (clusterStats.status === 'running' ? 'green' : 'red')
+                    }
                 />
             </div>
 
@@ -86,7 +104,7 @@ const Dashboard = () => {
                 <h2 className="text-xl font-semibold mb-4">Cluster Information</h2>
                 <div className="space-y-2">
                     <p className="text-gray-400">
-                        Your K3s cluster is managed by Tharnax. Use the Applications page to install
+                        Your K3s cluster is managed by Tharnax. Use the applications section below to install
                         additional components.
                     </p>
                 </div>

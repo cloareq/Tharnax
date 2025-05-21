@@ -1,8 +1,16 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
+import logging
 
 from app.routers import status, apps, install
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Tharnax Web API",
@@ -26,7 +34,9 @@ app.include_router(install.router)
 
 @app.get("/")
 async def root():
+    logger.info("Root endpoint accessed")
     return {"message": "Welcome to Tharnax Web API"}
 
 if __name__ == "__main__":
+    logger.info("Starting Tharnax Web API")
     uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True) 
