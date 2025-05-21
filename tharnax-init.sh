@@ -595,6 +595,84 @@ run_ansible() {
     fi
 }
 
+deploy_web_ui() {
+    echo ""
+    echo -e "${BLUE}Deploying Tharnax Web UI...${NC}"
+    echo -e "${YELLOW}This will deploy a web interface to manage your cluster.${NC}"
+    
+    read -p "Would you like to deploy the Web UI? (Y/n): " deploy_ui
+    
+    if [[ "$deploy_ui" =~ ^[Nn] ]]; then
+        echo -e "${YELLOW}Web UI deployment skipped.${NC}"
+        echo -e "${YELLOW}You can deploy it later by running:${NC}"
+        echo -e "${YELLOW}./tharnax-web/deploy.sh${NC}"
+        return
+    fi
+    
+    # Check for kubectl
+    if ! command -v kubectl >/dev/null 2>&1; then
+        echo -e "${YELLOW}kubectl is required to deploy the Web UI.${NC}"
+        echo -e "${YELLOW}Installing kubectl from k3s...${NC}"
+        sudo ln -sf /usr/local/bin/k3s /usr/local/bin/kubectl
+        
+        if ! command -v kubectl >/dev/null 2>&1; then
+            echo -e "${RED}Failed to set up kubectl. Deployment aborted.${NC}"
+            return
+        fi
+    fi
+    
+    # Verify the deployment script exists
+    if [ ! -f "./tharnax-web/deploy.sh" ]; then
+        echo -e "${RED}Deployment script not found at ./tharnax-web/deploy.sh${NC}"
+        echo -e "${YELLOW}Did you clone the complete Tharnax repository?${NC}"
+        return
+    fi
+    
+    # Verify kubernetes manifests exist
+    if [ ! -d "./tharnax-web/kubernetes" ]; then
+        echo -e "${RED}Kubernetes manifests directory not found at ./tharnax-web/kubernetes${NC}"
+        echo -e "${YELLOW}Did you clone the complete Tharnax repository?${NC}"
+        return
+    fi
+    
+    # Check for required manifest files
+    REQUIRED_FILES=("namespace.yaml" "rbac.yaml" "tharnax.yaml")
+    for file in "${REQUIRED_FILES[@]}"; do
+        if [ ! -f "./tharnax-web/kubernetes/$file" ]; then
+            echo -e "${RED}Required manifest file $file not found in ./tharnax-web/kubernetes/${NC}"
+            echo -e "${YELLOW}Did you clone the complete Tharnax repository?${NC}"
+            return
+        fi
+    done
+    
+    # Run the deployment script
+    echo -e "${BLUE}Running Web UI deployment script...${NC}"
+    chmod +x ./tharnax-web/deploy.sh
+    ./tharnax-web/deploy.sh
+    
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}Tharnax Web UI deployed successfully!${NC}"
+        
+        # Get the LoadBalancer IP (if available)
+        if command -v kubectl >/dev/null 2>&1; then
+            EXTERNAL_IP=$(kubectl -n tharnax-web get service tharnax-web -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+            if [ -n "$EXTERNAL_IP" ]; then
+                echo -e "${GREEN}Web UI is now available at:${NC}"
+                echo -e "${GREEN}http://${EXTERNAL_IP}${NC}"
+            else
+                echo -e "${YELLOW}LoadBalancer still pending. Check status with:${NC}"
+                echo -e "${YELLOW}kubectl -n tharnax-web get svc${NC}"
+                echo -e "${GREEN}Meanwhile, you can try accessing via node IP:${NC}"
+                echo -e "${GREEN}http://${MASTER_IP}${NC}"
+            fi
+        fi
+    else
+        echo -e "${RED}Web UI deployment failed. Please check the logs for details.${NC}"
+        echo -e "${YELLOW}You can try running the deployment script manually:${NC}"
+        echo -e "${YELLOW}./tharnax-web/deploy.sh${NC}"
+    fi
+}
+
 uninstall() {
     echo -e "${RED}UNINSTALL MODE${NC}"
     echo -e "${YELLOW}This will uninstall K3s from all nodes and clean up Tharnax files.${NC}"
@@ -755,6 +833,9 @@ read -p "Proceed with deployment? (Y/n): " proceed
 if [[ -z "$proceed" || "$proceed" =~ ^[Yy] ]]; then
     run_ansible
     echo -e "${GREEN}Tharnax initialization complete!${NC}"
+    
+    # Deploy the Tharnax Web UI after successful K3s deployment
+    deploy_web_ui
 else
     echo "Deployment cancelled. You can run the Ansible playbook later with:"
     echo "cd ansible && ansible-playbook -i inventory.ini playbook.yml"
