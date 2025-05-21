@@ -50,6 +50,10 @@ async def get_cluster_status(k8s_client: client.CoreV1Api = Depends(get_k8s_clie
             error_message = "Kubernetes API access unauthorized. Check RBAC permissions."
         elif "connection refused" in error_message.lower():
             error_message = "Could not connect to Kubernetes API. Check if cluster is running."
+            
+        # Log detailed information about the error
+        logger.error(f"Exception type: {type(e).__name__}")
+        logger.error(f"Exception args: {e.args}")
         
         return {
             "status": "error",

@@ -27,15 +27,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers
-app.include_router(status.router)
-app.include_router(apps.router)
-app.include_router(install.router)
+# Include routers with the /api prefix
+app.include_router(status.router, prefix="/api")
+app.include_router(apps.router, prefix="/api")
+app.include_router(install.router, prefix="/api")
 
 @app.get("/")
 async def root():
     logger.info("Root endpoint accessed")
     return {"message": "Welcome to Tharnax Web API"}
+
+@app.get("/api")
+async def api_root():
+    logger.info("API Root endpoint accessed")
+    return {"message": "Welcome to Tharnax Web API", "version": "0.1.0"}
 
 if __name__ == "__main__":
     logger.info("Starting Tharnax Web API")

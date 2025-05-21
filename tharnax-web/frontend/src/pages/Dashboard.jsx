@@ -18,17 +18,30 @@ const Dashboard = () => {
 
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    const [apiResponse, setApiResponse] = useState(null);
 
     useEffect(() => {
         const fetchClusterStatus = async () => {
             try {
                 setLoading(true);
+                console.log('Fetching cluster status from API...');
                 const response = await apiClient.get('/status');
+                console.log('API Response:', response);
+
+                setApiResponse(response.data); // Store full response for debugging
                 setClusterStats(response.data);
                 setError(null);
             } catch (err) {
                 console.error('Error fetching cluster status:', err);
-                setError('Failed to fetch cluster status. Make sure your backend is running and has proper access to the Kubernetes API.');
+                setApiResponse(err?.response?.data || null);
+
+                // Extract more error details if available
+                const errorMsg = err?.response?.data?.message ||
+                    err?.message ||
+                    'Failed to fetch cluster status';
+
+                setError(`${errorMsg}. Make sure your backend is running and has proper access to the Kubernetes API.`);
+
                 // Set some mock data for development
                 if (process.env.NODE_ENV === 'development') {
                     setClusterStats({
@@ -62,6 +75,16 @@ const Dashboard = () => {
                 <div className="mb-6 p-4 bg-red-900/30 border border-red-700 rounded-md text-red-300">
                     <p className="font-bold mb-2">Connection Error</p>
                     <p>{error}</p>
+
+                    {/* Debug information */}
+                    {process.env.NODE_ENV === 'development' && apiResponse && (
+                        <div className="mt-3 pt-3 border-t border-red-700">
+                            <p className="font-bold mb-1">Debug Info:</p>
+                            <pre className="text-xs overflow-auto">
+                                {JSON.stringify(apiResponse, null, 2)}
+                            </pre>
+                        </div>
+                    )}
                 </div>
             )}
 
