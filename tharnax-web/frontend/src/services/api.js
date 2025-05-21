@@ -1,20 +1,8 @@
 import axios from 'axios';
 
-// Determine the base URL based on environment
-// In production, this will connect to the backend service
-// In development, connect to a local backend
-const getBaseUrl = () => {
-    // When running in Kubernetes, we'll use the service name
-    if (process.env.NODE_ENV === 'production') {
-        return '/api';
-    }
-
-    // For local development
-    return 'http://localhost:8000';
-};
-
-export const apiClient = axios.create({
-    baseURL: getBaseUrl(),
+// Create axios instance with base URL
+const apiClient = axios.create({
+    baseURL: '/api',
     headers: {
         'Content-Type': 'application/json',
     },
@@ -24,11 +12,55 @@ export const apiClient = axios.create({
 apiClient.interceptors.response.use(
     response => response,
     error => {
-        // Log errors to console in development
-        if (process.env.NODE_ENV !== 'production') {
-            console.error('API Error:', error);
-        }
-
+        console.error('API Error:', error);
         return Promise.reject(error);
     }
-); 
+);
+
+// API endpoints
+export const fetchClusterStatus = async () => {
+    try {
+        const response = await apiClient.get('/status');
+        return response.data;
+    } catch (error) {
+        console.error('Error fetching cluster status:', error);
+        throw error;
+    }
+};
+
+export const fetchApps = async () => {
+    try {
+        const response = await apiClient.get('/apps');
+        return response.data;
+    } catch (error) {
+        console.error('Error fetching apps:', error);
+        throw error;
+    }
+};
+
+export const installApp = async (appId, config = {}) => {
+    try {
+        const response = await apiClient.post(`/install/${appId}`, config);
+        return response.data;
+    } catch (error) {
+        console.error(`Error installing ${appId}:`, error);
+        throw error;
+    }
+};
+
+export const getAppInstallStatus = async (appId) => {
+    try {
+        const response = await apiClient.get(`/install/${appId}/status`);
+        return response.data;
+    } catch (error) {
+        console.error(`Error fetching install status for ${appId}:`, error);
+        throw error;
+    }
+};
+
+export default {
+    fetchClusterStatus,
+    fetchApps,
+    installApp,
+    getAppInstallStatus
+}; 
