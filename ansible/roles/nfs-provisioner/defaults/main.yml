@@ -1,0 +1,13 @@
+---
+# Default variables for the NFS Provisioner role
+
+# NFS server settings
+nfs_server: "{{ hostvars[inventory_hostname]['ansible_host'] }}"
+nfs_path: "/mnt/tharnax-nfs"
+
+# Kubernetes namespace for the provisioner
+k8s_namespace: storage
+
+# Test PVC settings
+test_pvc_name: test-pvc
+create_test_pvc: true 

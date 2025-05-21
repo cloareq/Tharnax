@@ -11,6 +11,8 @@ Tharnax is an automation tool designed to simplify the deployment of K3s Kuberne
 - 🚀 One-script setup for complete K3s cluster deployment
 - 🔄 Support for variable number of worker nodes
 - 🔑 Flexible SSH authentication (password or key-based)
+- 💾 Optional NFS storage provisioning for persistent volumes
+- 🖥️ Web UI for cluster management and monitoring
 
 ## Requirements
 
@@ -42,7 +44,7 @@ chmod +x tharnax-init.sh
 
 ### Basic Installation
 
-To start a new installation:
+To start a new installation with all components (K3s + NFS + Web UI):
 
 ```bash
 ./tharnax-init.sh
@@ -53,6 +55,18 @@ The script will guide you through:
 2. Worker node IP configuration
 3. SSH authentication setup
 4. Running Ansible playbooks to deploy K3s
+5. Optional NFS storage setup
+6. Web UI deployment
+
+### Component-Specific Installation
+
+You can selectively install components:
+
+```bash
+./tharnax-init.sh --nfs    # Install only NFS storage (requires K3s already installed)
+./tharnax-init.sh --ui     # Install only Web UI (requires K3s already installed)
+./tharnax-init.sh --nfs --ui  # Install both NFS and UI (K3s must be installed)
+```
 
 ### Uninstallation
 
@@ -70,8 +84,10 @@ Usage: ./tharnax-init.sh [options]
 Options:
   -h, --help      Show this help message
   -u, --uninstall Uninstall K3s from all nodes and clean up
+  --nfs           Install only NFS storage (requires K3s already installed)
+  --ui            Install only Web UI (requires K3s already installed)
 
-Without options, runs the standard installation process
+Without options, runs the full installation process (K3s + NFS + UI)
 ```
 
 ## Installation Process
@@ -81,13 +97,58 @@ Without options, runs the standard installation process
 3. **Ansible Setup**: Creates inventory file and playbooks
 4. **Preflight Check**: Verifies connectivity to all nodes
 5. **Deployment**: Installs K3s on master and worker nodes
-6. **Verification**: Confirms successful installation
+6. **Storage Setup**: (Optional) Configures NFS storage for the cluster
+7. **Web UI Deployment**: (Optional) Deploys the management UI
+8. **Verification**: Confirms successful installation
+
+## Storage Options
+
+Tharnax offers NFS storage provisioning for persistent volumes:
+
+### Features
+
+- Automated NFS server setup on the master node
+- Support for using an existing NFS server
+- Option to use a dedicated disk or a directory path
+- Automatic provisioning of StorageClass for Kubernetes
+- Persistent volume claims ready to use
+
+### Usage
+
+When prompted during installation, you can:
+- Use an existing NFS server on your network
+- Set up a new NFS server on the master node
+- Choose between a dedicated disk or a system directory
+- Skip NFS setup if not needed
+
+## Web UI
+
+Tharnax includes a web-based management interface:
+
+### Features
+
+- Dashboard with cluster overview
+- Node status monitoring
+- Resource usage visualization
+- Workload management
+- Storage management
+
+### Access
+
+After installation, the Web UI is accessible at:
+- LoadBalancer IP (if available)
+- Master node IP (alternative access)
 
 ## Customization
 
 The K3s installation can be customized by modifying the Ansible roles in:
 - `ansible/roles/k3s-master/tasks/main.yml` (master node configuration)
 - `ansible/roles/k3s-agent/tasks/main.yml` (worker node configuration)
+
+NFS storage configuration:
+- `ansible/roles/nfs-server/tasks/main.yml` (NFS server setup)
+- `ansible/roles/nfs-client/tasks/main.yml` (NFS client setup)
+- `ansible/roles/nfs-provisioner/tasks/main.yml` (Kubernetes provisioner)
 
 ## Troubleshooting
 
@@ -113,6 +174,21 @@ If K3s installation times out:
 - Verify that nodes have sufficient resources
 - Examine logs on the affected nodes with `journalctl -u k3s` or `journalctl -u k3s-agent`
 
+### NFS Storage Issues
+
+If NFS storage setup fails:
+- Check if the specified disk is already mounted or in use
+- Verify that the NFS server is accessible from worker nodes
+- Check firewall settings to allow NFS traffic
+- Run `showmount -e <master-ip>` to verify exports
+
+### Web UI Access Issues
+
+If you cannot access the Web UI:
+- Check if the service is running with `kubectl -n tharnax-web get pods`
+- Verify LoadBalancer status with `kubectl -n tharnax-web get svc`
+- Try accessing via the master node IP if LoadBalancer is not available
+
 ## File Structure
 
 ```
@@ -122,10 +198,19 @@ tharnax/
 ├── ansible/
 │   ├── inventory.ini        # Generated Ansible inventory
 │   ├── playbook.yml         # Main Ansible playbook
+│   ├── nfs.yml              # NFS storage playbook
 │   ├── roles/
 │   │   ├── k3s-master/      # Master node role
-│   │   └── k3s-agent/       # Worker node role
+│   │   ├── k3s-agent/       # Worker node role
+│   │   ├── nfs-server/      # NFS server role
+│   │   ├── nfs-client/      # NFS client role
+│   │   └── nfs-provisioner/ # NFS Kubernetes provisioner
 │   └── uninstall/           # Uninstallation playbooks
+├── tharnax-web/             # Web UI components
+│   ├── deploy.sh            # Web UI deployment script
+│   ├── kubernetes/          # Kubernetes manifests for UI
+│   ├── frontend/            # UI frontend
+│   └── backend/             # UI backend
 └── README.md                # This file
 ```
 

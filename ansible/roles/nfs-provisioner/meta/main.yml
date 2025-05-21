@@ -1,0 +1,21 @@
+---
+galaxy_info:
+  author: Tharnax
+  description: Deploys the NFS subdir external provisioner for Kubernetes
+  license: MIT
+  min_ansible_version: 2.9
+  platforms:
+    - name: Debian
+      versions:
+        - all
+    - name: Ubuntu
+      versions:
+        - all
+  galaxy_tags:
+    - nfs
+    - storage
+    - kubernetes
+    - k3s
+    - provisioner
+
+dependencies: [] 

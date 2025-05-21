@@ -1,0 +1,20 @@
+---
+galaxy_info:
+  author: Tharnax
+  description: NFS Client role for Tharnax K3s infrastructure
+  license: MIT
+  min_ansible_version: 2.9
+  platforms:
+    - name: Debian
+      versions:
+        - all
+    - name: Ubuntu
+      versions:
+        - all
+  galaxy_tags:
+    - nfs
+    - storage
+    - kubernetes
+    - k3s
+
+dependencies: [] 

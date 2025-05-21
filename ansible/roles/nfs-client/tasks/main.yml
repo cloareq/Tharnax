@@ -1,0 +1,36 @@
+---
+# NFS Client Role - Main Tasks
+
+# Install NFS client
+- name: Install NFS client packages
+  apt:
+    name: "{{ nfs_client_packages }}"
+    state: present
+    update_cache: yes
+  when: nfs_client_install_packages
+  tags:
+    - nfs_client
+
+# Load NFS modules
+- name: Load NFS modules
+  command: "modprobe {{ item }}"
+  with_items: "{{ nfs_client_kernel_modules }}"
+  ignore_errors: yes
+  changed_when: false
+  tags:
+    - nfs_client
+
+# Verify NFS client is working
+- name: Verify NFS client status
+  command: rpcinfo -p
+  register: rpcinfo_result
+  changed_when: false
+  failed_when: false
+  tags:
+    - nfs_client
+
+- name: Display NFS client status
+  debug:
+    msg: "NFS client installation complete. RPC services: {{ rpcinfo_result.stdout_lines | default(['Not available']) | join('\n') }}"
+  tags:
+    - nfs_client 

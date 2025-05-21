@@ -1,0 +1,78 @@
+---
+# NFS Server Role - Main Tasks
+
+# Verify required variables
+- name: Verify required variables
+  debug:
+    msg: "Configuring NFS with path: {{ nfs_export_path | default('Not specified') }}"
+
+- name: Fail if export path is not defined
+  fail:
+    msg: "NFS export path must be specified"
+  when: nfs_export_path is not defined or nfs_export_path == ""
+
+# Import disk preparation tasks if needed
+- name: Include disk preparation tasks
+  include_tasks: disk_prep.yml
+  when: disk_device is defined and disk_device != ""
+  tags: 
+    - disk_prep
+
+# Install NFS server
+- name: Install NFS server
+  apt:
+    name: 
+      - nfs-kernel-server
+      - nfs-common
+    state: present
+    update_cache: yes
+  tags:
+    - configure
+
+# Create NFS export directory if needed
+- name: Create NFS export directory
+  file:
+    path: "{{ nfs_export_path }}"
+    state: directory
+    mode: '0755'
+  when: not disk_device is defined or disk_device == ""
+  tags:
+    - configure
+
+# Configure NFS exports
+- name: Configure NFS exports
+  template:
+    src: exports.j2
+    dest: /etc/exports
+  tags:
+    - configure
+
+# Apply exports configuration
+- name: Apply exports configuration
+  command: exportfs -ra
+  tags:
+    - configure
+
+# Restart NFS server
+- name: Restart NFS server
+  service:
+    name: nfs-kernel-server
+    state: restarted
+    enabled: yes
+  tags:
+    - configure
+
+# Verify NFS server is running
+- name: Verify NFS server is running
+  service:
+    name: nfs-kernel-server
+    state: started
+  tags:
+    - configure
+
+# Output NFS server information
+- name: Output NFS server information
+  debug:
+    msg: "NFS server setup complete. Export: {{ nfs_export_path }}"
+  tags:
+    - configure

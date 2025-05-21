@@ -1,0 +1,22 @@
+---
+# NFS Server Role - Meta Data
+
+galaxy_info:
+  role_name: nfs-server
+  description: Install and configure NFS server with optional disk preparation
+  author: Tharnax Team
+  min_ansible_version: 2.9
+  platforms:
+    - name: Debian
+      versions:
+        - all
+    - name: Ubuntu
+      versions:
+        - all
+  
+  galaxy_tags:
+    - nfs
+    - storage
+    - homelab
+
+dependencies: [] 

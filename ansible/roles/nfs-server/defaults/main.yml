@@ -1,0 +1,28 @@
+---
+# Default variables for NFS server role
+
+# NFS export directory
+nfs_export_path: "/mnt/nfs-share"
+
+# NFS export options
+nfs_export_options: "*(rw,sync,no_subtree_check,no_root_squash)"
+
+# NFS server package
+nfs_server_package: nfs-kernel-server
+
+# Create the export directory if it doesn't exist
+nfs_create_export_dir: true
+
+# Set proper permissions on the export directory
+nfs_set_permissions: true
+nfs_owner: nobody
+nfs_group: nogroup
+nfs_mode: '0777'
+
+# Disk preparation defaults (optional)
+# Uncomment and configure these values to use disk preparation
+# disk_device: ""
+# disk_mount_point: "/mnt/nfs-share" 
+# disk_should_format: false
+# disk_create_partition: true
+# force_disk_format: false 

@@ -1,0 +1,283 @@
+---
+# Disk Preparation Tasks
+
+- name: Check if disk_should_format is set
+  debug:
+    msg: "Formatting of disk {{ disk_device }} is {{ 'ENABLED' if disk_should_format else 'DISABLED' }}"
+  tags: 
+    - disk_prep
+
+- name: Fail if disk_device is not set but formatting is enabled
+  fail:
+    msg: "disk_device must be specified when disk_should_format is true"
+  when: disk_should_format is defined and disk_should_format and (disk_device is not defined or disk_device == "")
+  tags: 
+    - disk_prep
+
+- name: Check if disk_device exists
+  stat:
+    path: "{{ disk_device }}"
+  register: disk_device_stat
+  when: disk_device is defined and disk_device != ""
+  tags: 
+    - disk_prep
+
+- name: Fail if disk_device does not exist
+  fail:
+    msg: "The specified disk device {{ disk_device }} does not exist"
+  when: disk_device is defined and disk_device != "" and not disk_device_stat.stat.exists
+  tags: 
+    - disk_prep
+
+- name: Check disk mountpoint
+  debug:
+    msg: "Will mount disk to {{ disk_mount_point }}"
+  when: disk_mount_point is defined
+  tags: 
+    - disk_prep
+
+# Safety checks for mounted disks
+- name: Check if whole disk is mounted
+  shell: "findmnt -S {{ disk_device }} || echo 'Not mounted'"
+  register: whole_disk_mounted
+  changed_when: false
+  failed_when: false
+  tags: 
+    - disk_prep
+
+- name: Check if partitions are mounted
+  shell: "findmnt -S {{ disk_device }}* || echo 'Not mounted'"
+  register: disk_mounted
+  changed_when: false
+  failed_when: false
+  tags: 
+    - disk_prep
+
+- name: Check if disk is in use by processes
+  shell: "lsof {{ disk_device }}* 2>/dev/null || echo 'Not in use'"
+  register: disk_in_use
+  changed_when: false
+  failed_when: false
+  tags: 
+    - disk_prep
+
+- name: Set disk is mounted fact
+  set_fact:
+    disk_is_mounted: "{{ whole_disk_mounted.stdout != 'Not mounted' or disk_mounted.stdout != 'Not mounted' }}"
+  tags:
+    - disk_prep
+
+- name: Display mount status
+  debug:
+    msg: |
+      Disk mount status:
+      - Whole disk mounted: {{ whole_disk_mounted.stdout != 'Not mounted' }}
+      - Has mounted partitions: {{ disk_mounted.stdout != 'Not mounted' }}
+  tags:
+    - disk_prep
+
+# Fail if disk is mounted
+- name: Fail if disk is mounted
+  fail:
+    msg: |
+      ERROR: The disk {{ disk_device }} or its partitions are currently mounted.
+      
+      Automatic unmounting has been disabled for safety reasons.
+      
+      Please manually unmount the disk before continuing:
+      
+      1. Check what is mounted with:
+         $ findmnt -S {{ disk_device }}*
+      
+      2. Unmount all affected paths:
+         $ sudo umount <mounted_path>
+      
+      3. If the unmount fails due to the resource being busy, find which processes
+         are using the disk:
+         $ sudo lsof <mounted_path>
+         $ sudo lsof {{ disk_device }}*
+      
+      4. Stop those processes or services and try again.
+      
+      After unmounting all partitions, run the script again.
+  when: disk_is_mounted and disk_should_format
+  tags:
+    - disk_prep
+
+# Check if the disk already has partitions
+- name: Check if disk already has partitions
+  shell: "lsblk -l | grep -E '{{ disk_device | basename }}[0-9]+' | wc -l"
+  register: partition_count
+  changed_when: false
+  tags:
+    - disk_prep
+
+- name: Set already partitioned flag
+  set_fact:
+    disk_already_partitioned: "{{ partition_count.stdout|int > 0 }}"
+  tags:
+    - disk_prep
+
+- name: Display disk partition status
+  debug:
+    msg: "Disk {{ disk_device }} {{ 'already has ' + partition_count.stdout + ' partitions' if disk_already_partitioned else 'has no partitions' }}"
+  tags:
+    - disk_prep
+
+# Decision tree for disk preparation
+- name: Skip partitioning if disk already has partitions (unless forced)
+  set_fact:
+    should_skip_partitioning: "{{ disk_already_partitioned and not (force_disk_format|default(false)) }}"
+  tags:
+    - disk_prep
+
+- name: Display partitioning decision
+  debug:
+    msg: "{{ 'Will skip partitioning because disk already has partitions' if should_skip_partitioning else 'Will proceed with partitioning' }}"
+  tags:
+    - disk_prep
+
+# Only attempt to create a GPT partition table if there are no partitions or forcing format
+- name: Create new GPT partition table
+  command: "parted -s {{ disk_device }} mklabel gpt"
+  when: 
+    - disk_should_format is defined and disk_should_format
+    - disk_create_partition is defined and disk_create_partition
+    - not should_skip_partitioning
+  register: parted_result
+  failed_when: 
+    - parted_result.rc != 0
+    - "'Error: Partition(s) on {{ disk_device }} are being used' not in parted_result.stderr"
+  tags: 
+    - disk_prep
+
+# Fail with helpful message if partition is in use
+- name: Fail if partition is in use
+  fail:
+    msg: |
+      ERROR: Cannot partition disk {{ disk_device }} because it is in use.
+      
+      This usually means the disk or its partitions are mounted or being used by a process.
+      
+      Please:
+      1. Unmount all partitions:
+         $ sudo umount {{ disk_device }}*
+      
+      2. Check for processes using the disk:
+         $ sudo lsof {{ disk_device }}*
+      
+      3. Stop those processes and try again.
+  when: 
+    - parted_result is defined
+    - parted_result.rc is defined
+    - parted_result.rc != 0
+    - parted_result.stderr is defined
+    - "'Error: Partition(s) on {{ disk_device }} are being used' in parted_result.stderr"
+  tags:
+    - disk_prep
+
+# Only create primary partition if there are no partitions or forcing format
+- name: Create primary partition
+  command: "parted -s {{ disk_device }} mkpart primary 0% 100%"
+  when: 
+    - disk_should_format is defined and disk_should_format
+    - disk_create_partition is defined and disk_create_partition
+    - not should_skip_partitioning
+    - parted_result is defined
+    - parted_result.rc is defined
+    - parted_result.rc == 0
+  tags: 
+    - disk_prep
+
+# Check if the first partition exists
+- name: Check if first partition exists
+  stat:
+    path: "{{ disk_device }}1"
+  register: partition_stat
+  tags:
+    - disk_prep
+
+# Format only if explicitly requested AND not already formatted
+- name: Check if partition is already formatted
+  shell: "blkid {{ disk_device }}1 | grep -q 'TYPE=' || echo 'Not formatted'"
+  register: format_check
+  changed_when: false
+  failed_when: false
+  when: partition_stat.stat.exists
+  tags:
+    - disk_prep
+
+- name: Format disk when requested and not formatted
+  shell: "mkfs.ext4 {{ disk_device }}1"
+  when: 
+    - disk_should_format is defined and disk_should_format
+    - partition_stat.stat.exists
+    - format_check.stdout == 'Not formatted'
+  tags: 
+    - disk_prep
+
+# Create mount point
+- name: Create mount point
+  file:
+    path: "{{ disk_mount_point }}"
+    state: directory
+    mode: '0755'
+  when: disk_mount_point is defined and disk_mount_point != ""
+  tags: 
+    - disk_prep
+
+# Check if already mounted
+- name: Check if disk is already mounted at desired location
+  command: "findmnt {{ disk_mount_point }}"
+  register: mount_check
+  changed_when: false
+  failed_when: false
+  tags: 
+    - disk_prep
+
+# Mount only if not already mounted
+- name: Mount the disk temporarily
+  shell: "mount {{ disk_device }}1 {{ disk_mount_point }}"
+  when: 
+    - disk_mount_point is defined 
+    - mount_check.rc != 0
+    - partition_stat.stat.exists
+  register: mount_result
+  failed_when: mount_result.rc != 0
+  tags: 
+    - disk_prep
+
+# Add to fstab only if not already there
+- name: Check if disk is in fstab
+  shell: "grep -q '{{ disk_device }}1.*{{ disk_mount_point }}' /etc/fstab || echo 'Not in fstab'"
+  register: fstab_check
+  changed_when: false
+  failed_when: false
+  tags:
+    - disk_prep
+
+# Add to fstab
+- name: Add to fstab for persistent mounting
+  shell: |
+    echo "{{ disk_device }}1 {{ disk_mount_point }} ext4 defaults 0 0" >> /etc/fstab
+  when: 
+    - disk_mount_point is defined
+    - fstab_check.stdout == 'Not in fstab'
+  tags: 
+    - disk_prep
+
+# Final report
+- name: Report success
+  debug:
+    msg: "Disk preparation complete. Disk {{ disk_device }} mounted at {{ disk_mount_point }}"
+  when: disk_device is defined and disk_mount_point is defined
+  tags: 
+    - disk_prep
+
+# Update nfs_export_path to match the mounted disk path
+- name: Set NFS export path to mounted disk path
+  set_fact:
+    nfs_export_path: "{{ disk_mount_point }}"
+  when: disk_mount_point is defined and disk_mount_point != ""
+  tags: 
+    - disk_prep 

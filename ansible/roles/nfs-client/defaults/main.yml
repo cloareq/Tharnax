@@ -1,0 +1,14 @@
+---
+# Defaults for NFS client role
+
+# Whether to install NFS client packages
+nfs_client_install_packages: true
+
+# Packages to install
+nfs_client_packages:
+  - nfs-common
+
+# Kernel modules to load
+nfs_client_kernel_modules:
+  - nfs
+  - nfsd 

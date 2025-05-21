@@ -1,0 +1,73 @@
+---
+# Tharnax - Complete NFS Storage Playbook
+
+- name: Display storage information
+  hosts: master
+  become: true
+  gather_facts: true
+  tags: display
+  tasks:
+    - name: Get disk information
+      shell: df -h | grep -v tmpfs | grep -v snap
+      register: disk_info
+      changed_when: false
+
+    - name: Print storage header
+      debug: 
+        msg: "==================== AVAILABLE STORAGE ===================="
+
+    - name: Display disk information
+      debug:
+        var: disk_info.stdout_lines
+
+    - name: Get available disks
+      shell: lsblk --output NAME,SIZE,MOUNTPOINT,FSTYPE,LABEL
+      register: available_disks
+      changed_when: false
+
+    - name: Print disk header
+      debug: 
+        msg: "==================== AVAILABLE DISKS ======================"
+
+    - name: Display available disks
+      debug:
+        var: available_disks.stdout_lines
+
+    - name: Print usage instructions
+      debug:
+        msg:
+          - "You have two options for NFS storage:"
+          - "1. Use a directory path (like /mnt/tharnax-nfs) - this will be created on the system disk"
+          - "2. Use a separate disk (like /dev/sdb) - this can be formatted and mounted"
+          - "If you choose option 2, the disk will be prepared and mounted automatically"
+
+- name: Set up NFS server with disk preparation
+  hosts: master
+  become: true
+  gather_facts: true
+  tags: 
+    - setup
+    - disk_prep
+    - configure
+  roles:
+    - nfs-server
+
+- name: Install NFS client on worker nodes
+  hosts: workers
+  become: true
+  gather_facts: true
+  tags: 
+    - client
+    - setup
+  roles:
+    - nfs-client
+
+- name: Deploy NFS Storage Provisioner to Kubernetes
+  hosts: master
+  gather_facts: no
+  become: yes
+  tags:
+    - provisioner
+    - setup
+  roles:
+    - nfs-provisioner 

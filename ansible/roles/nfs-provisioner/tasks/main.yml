@@ -1,0 +1,236 @@
+---
+# NFS Provisioner Role - Main Tasks
+
+- name: Create temporary directory for manifests
+  tempfile:
+    state: directory
+    suffix: tharnax-nfs
+  register: temp_dir
+  changed_when: false
+  delegate_to: localhost
+  become: no
+
+- name: Create namespace manifest
+  copy:
+    dest: "{{ temp_dir.path }}/nfs-namespace.yaml"
+    content: |
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: {{ k8s_namespace }}
+  delegate_to: localhost
+  become: no
+
+- name: Create RBAC manifests
+  copy:
+    dest: "{{ temp_dir.path }}/nfs-rbac.yaml"
+    content: |
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: nfs-provisioner
+        namespace: {{ k8s_namespace }}
+      ---
+      kind: ClusterRole
+      apiVersion: rbac.authorization.k8s.io/v1
+      metadata:
+        name: nfs-provisioner-runner
+      rules:
+        - apiGroups: [""]
+          resources: ["persistentvolumes"]
+          verbs: ["get", "list", "watch", "create", "delete"]
+        - apiGroups: [""]
+          resources: ["persistentvolumeclaims"]
+          verbs: ["get", "list", "watch", "update"]
+        - apiGroups: ["storage.k8s.io"]
+          resources: ["storageclasses"]
+          verbs: ["get", "list", "watch"]
+        - apiGroups: [""]
+          resources: ["events"]
+          verbs: ["create", "update", "patch"]
+      ---
+      kind: ClusterRoleBinding
+      apiVersion: rbac.authorization.k8s.io/v1
+      metadata:
+        name: run-nfs-provisioner
+      subjects:
+        - kind: ServiceAccount
+          name: nfs-provisioner
+          namespace: {{ k8s_namespace }}
+      roleRef:
+        kind: ClusterRole
+        name: nfs-provisioner-runner
+        apiGroup: rbac.authorization.k8s.io
+      ---
+      kind: Role
+      apiVersion: rbac.authorization.k8s.io/v1
+      metadata:
+        name: leader-locking-nfs-provisioner
+        namespace: {{ k8s_namespace }}
+      rules:
+        - apiGroups: [""]
+          resources: ["endpoints"]
+          verbs: ["get", "list", "watch", "create", "update", "patch"]
+      ---
+      kind: RoleBinding
+      apiVersion: rbac.authorization.k8s.io/v1
+      metadata:
+        name: leader-locking-nfs-provisioner
+        namespace: {{ k8s_namespace }}
+      subjects:
+        - kind: ServiceAccount
+          name: nfs-provisioner
+          namespace: {{ k8s_namespace }}
+      roleRef:
+        kind: Role
+        name: leader-locking-nfs-provisioner
+        apiGroup: rbac.authorization.k8s.io
+  delegate_to: localhost
+  become: no
+
+- name: Create deployment manifest
+  copy:
+    dest: "{{ temp_dir.path }}/nfs-deployment.yaml"
+    content: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: nfs-provisioner
+        namespace: {{ k8s_namespace }}
+      spec:
+        replicas: 1
+        strategy:
+          type: Recreate
+        selector:
+          matchLabels:
+            app: nfs-provisioner
+        template:
+          metadata:
+            labels:
+              app: nfs-provisioner
+          spec:
+            serviceAccountName: nfs-provisioner
+            containers:
+              - name: nfs-provisioner
+                image: k8s.gcr.io/sig-storage/nfs-subdir-external-provisioner:v4.0.2
+                volumeMounts:
+                  - name: nfs-client-root
+                    mountPath: /persistentvolumes
+                env:
+                  - name: PROVISIONER_NAME
+                    value: k8s-sigs.io/nfs-subdir-external-provisioner
+                  - name: NFS_SERVER
+                    value: {{ nfs_server }}
+                  - name: NFS_PATH
+                    value: {{ nfs_path }}
+            volumes:
+              - name: nfs-client-root
+                nfs:
+                  server: {{ nfs_server }}
+                  path: {{ nfs_path }}
+  delegate_to: localhost
+  become: no
+
+- name: Create storage class manifest
+  copy:
+    dest: "{{ temp_dir.path }}/nfs-storageclass.yaml"
+    content: |
+      apiVersion: storage.k8s.io/v1
+      kind: StorageClass
+      metadata:
+        name: nfs-storage
+        annotations:
+          storageclass.kubernetes.io/is-default-class: "true"
+      provisioner: k8s-sigs.io/nfs-subdir-external-provisioner
+      parameters:
+        archiveOnDelete: "false"
+  delegate_to: localhost
+  become: no
+
+- name: Create test PVC manifest
+  copy:
+    dest: "{{ temp_dir.path }}/test-pvc.yaml"
+    content: |
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: {{ test_pvc_name }}
+        namespace: default
+      spec:
+        accessModes:
+          - ReadWriteMany
+        storageClassName: nfs-storage
+        resources:
+          requests:
+            storage: 1Mi
+  delegate_to: localhost
+  become: no
+
+- name: Apply namespace manifest
+  command: kubectl apply -f {{ temp_dir.path }}/nfs-namespace.yaml
+  register: ns_result
+  changed_when: "'created' in ns_result.stdout or 'configured' in ns_result.stdout"
+
+- name: Apply RBAC manifests
+  command: kubectl apply -f {{ temp_dir.path }}/nfs-rbac.yaml
+  register: rbac_result
+  changed_when: "'created' in rbac_result.stdout or 'configured' in rbac_result.stdout"
+
+- name: Apply deployment manifest
+  command: kubectl apply -f {{ temp_dir.path }}/nfs-deployment.yaml
+  register: deploy_result
+  changed_when: "'created' in deploy_result.stdout or 'configured' in deploy_result.stdout"
+
+- name: Apply storage class manifest
+  command: kubectl apply -f {{ temp_dir.path }}/nfs-storageclass.yaml
+  register: sc_result
+  changed_when: "'created' in sc_result.stdout or 'configured' in sc_result.stdout"
+
+- name: Wait for deployment to be ready
+  command: kubectl -n {{ k8s_namespace }} rollout status deployment/nfs-provisioner --timeout=60s
+  register: rollout_result
+  changed_when: false
+  failed_when: false
+
+- name: Show deployment status
+  debug:
+    msg: "NFS provisioner deployment status: {{ 'Ready' if rollout_result.rc == 0 else 'Not Ready - check manually with: kubectl -n storage get pods' }}"
+
+- name: Create test PVC
+  command: kubectl apply -f {{ temp_dir.path }}/test-pvc.yaml
+  register: pvc_result
+  changed_when: "'created' in pvc_result.stdout or 'configured' in pvc_result.stdout"
+  failed_when: false
+
+- name: Wait for PVC to bind
+  shell: |
+    for i in {1..10}; do
+      PVC_STATUS=$(kubectl get pvc {{ test_pvc_name }} -o jsonpath='{.status.phase}')
+      if [ "$PVC_STATUS" = "Bound" ]; then
+        echo "Bound"
+        exit 0
+      fi
+      sleep 2
+    done
+    echo "Not bound within timeout"
+  register: pvc_status
+  changed_when: false
+  failed_when: false
+
+- name: Show PVC status
+  debug:
+    msg: "Test PVC status: {{ pvc_status.stdout }}"
+
+- name: Delete test PVC if bound
+  command: kubectl delete pvc {{ test_pvc_name }}
+  when: pvc_status.stdout == "Bound"
+  changed_when: true
+  failed_when: false
+
+- name: Clean up temporary files
+  file:
+    path: "{{ temp_dir.path }}"
+    state: absent
+  delegate_to: localhost
+  become: no
+  changed_when: false 

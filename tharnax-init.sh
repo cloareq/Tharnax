@@ -12,17 +12,27 @@ NC='\033[0m'
 
 CONFIG_FILE=".tharnax.conf"
 
+# Initialize component flags
+COMPONENT_UI=false
+COMPONENT_NFS=false
+COMPONENT_K3S=true  # Default to true, will be set to false if specific components are selected
+
 show_usage() {
     echo "Usage: $0 [options]"
     echo
     echo "Options:"
     echo "  -h, --help      Show this help message"
     echo "  -u, --uninstall Uninstall K3s from all nodes and clean up"
+    echo "  --nfs           Install only NFS storage (requires K3s already installed)"
+    echo "  --ui            Install only Web UI (requires K3s already installed)"
     echo
-    echo "Without options, runs the standard installation process"
+    echo "Without options, runs the full installation process (K3s + NFS + UI)"
 }
 
 parse_args() {
+    # Check if specific components are requested
+    SPECIFIC_COMPONENTS=false
+    
     while [[ $# -gt 0 ]]; do
         key="$1"
         case $key in
@@ -33,6 +43,14 @@ parse_args() {
             -u|--uninstall)
                 UNINSTALL_MODE=true
                 ;;
+            --nfs)
+                COMPONENT_NFS=true
+                SPECIFIC_COMPONENTS=true
+                ;;
+            --ui)
+                COMPONENT_UI=true
+                SPECIFIC_COMPONENTS=true
+                ;;
             *)
                 echo -e "${RED}Unknown option: $key${NC}"
                 show_usage
@@ -41,13 +59,21 @@ parse_args() {
         esac
         shift
     done
+    
+    # If specific components are selected, turn off K3s installation
+    if [ "$SPECIFIC_COMPONENTS" = true ]; then
+        COMPONENT_K3S=false
+    else
+        # If no specific components are selected, install everything
+        COMPONENT_NFS=true
+        COMPONENT_UI=true
+    fi
 }
 
 # Ensure required packages are installed
 ensure_prerequisites() {
     echo -e "${BLUE}Ensuring required packages are installed...${NC}"
     
-    # Check for curl
     if ! command -v curl >/dev/null 2>&1; then
         echo -e "${YELLOW}Installing curl...${NC}"
         sudo apt update
@@ -600,15 +626,6 @@ deploy_web_ui() {
     echo -e "${BLUE}Deploying Tharnax Web UI...${NC}"
     echo -e "${YELLOW}This will deploy a web interface to manage your cluster.${NC}"
     
-    read -p "Would you like to deploy the Web UI? (Y/n): " deploy_ui
-    
-    if [[ "$deploy_ui" =~ ^[Nn] ]]; then
-        echo -e "${YELLOW}Web UI deployment skipped.${NC}"
-        echo -e "${YELLOW}You can deploy it later by running:${NC}"
-        echo -e "${YELLOW}./tharnax-web/deploy.sh${NC}"
-        return
-    fi
-    
     # Check for kubectl
     if ! command -v kubectl >/dev/null 2>&1; then
         echo -e "${YELLOW}kubectl is required to deploy the Web UI.${NC}"
@@ -671,6 +688,276 @@ deploy_web_ui() {
         echo -e "${YELLOW}You can try running the deployment script manually:${NC}"
         echo -e "${YELLOW}./tharnax-web/deploy.sh${NC}"
     fi
+}
+
+configure_nfs_storage() {
+    echo ""
+    echo -e "${BLUE}Configuring NFS Storage for Kubernetes${NC}"
+    echo -e "${YELLOW}This will set up persistent storage for your K3s cluster using NFS.${NC}"
+    
+    read -p "Do you already have an NFS server on your network? (y/N): " has_nfs_server
+    
+    if [[ "$has_nfs_server" =~ ^[Yy] ]]; then
+        # User has an existing NFS server
+        echo -e "${BLUE}Using existing NFS server...${NC}"
+        read -p "Enter the NFS server IP or hostname: " nfs_server_ip
+        read -p "Enter the exported NFS path (e.g. /mnt/homelab): " nfs_path
+        
+        # Verify NFS connectivity
+        echo -e "${BLUE}Verifying NFS connectivity...${NC}"
+        if ! showmount -e "$nfs_server_ip" &>/dev/null; then
+            echo -e "${YELLOW}Warning: Could not verify NFS exports from $nfs_server_ip.${NC}"
+            echo -e "${YELLOW}Make sure the NFS server is accessible and the path is exported.${NC}"
+            read -p "Continue anyway? (y/N): " continue_anyway
+            if [[ ! "$continue_anyway" =~ ^[Yy] ]]; then
+                echo -e "${RED}NFS configuration aborted.${NC}"
+                return 1
+            fi
+        else
+            echo -e "${GREEN}NFS server is accessible.${NC}"
+        fi
+        
+        # Deploy the NFS provisioner using the existing server
+        echo -e "${BLUE}Deploying NFS storage provisioner to Kubernetes...${NC}"
+        
+        # Export environment variables for the playbook
+        export NFS_SERVER="$nfs_server_ip"
+        export NFS_PATH="$nfs_path"
+        
+        # Run only the NFS client and provisioner playbook
+        if [ "$AUTH_TYPE" = "password" ]; then
+            cd ansible
+            ansible-playbook -i inventory.ini nfs.yml --tags "client,provisioner" --ask-pass --ask-become-pass \
+                -e "nfs_server=$nfs_server_ip nfs_path=$nfs_path"
+            cd ..
+        else
+            cd ansible
+            ansible-playbook -i inventory.ini nfs.yml --tags "client,provisioner" --ask-become-pass \
+                -e "nfs_server=$nfs_server_ip nfs_path=$nfs_path"
+            cd ..
+        fi
+    else
+        # Set up a new NFS server on the master node
+        echo -e "${BLUE}Setting up a new NFS server on the master node...${NC}"
+        
+        # First, run the storage information playbook
+        echo -e "${BLUE}Collecting storage information from master node...${NC}"
+        
+        if [ "$AUTH_TYPE" = "password" ]; then
+            cd ansible
+            ansible-playbook -i inventory.ini nfs.yml --tags "display" --ask-pass --ask-become-pass
+            cd ..
+        else
+            cd ansible
+            ansible-playbook -i inventory.ini nfs.yml --tags "display" --ask-become-pass
+            cd ..
+        fi
+        
+        # Ask if user wants to use a dedicated disk
+        echo ""
+        echo -e "${BLUE}NFS Storage Configuration${NC}"
+        
+        disk_config_choice=""
+        while [ -z "$disk_config_choice" ]; do
+            echo -e "${YELLOW}Do you want to use a dedicated disk for NFS storage?${NC}"
+            echo "1) Yes, format and use a dedicated disk (recommended for production)"
+            echo "2) No, use a directory on the system disk (simpler setup)"
+            read -p "Enter your choice [2]: " use_dedicated_disk
+            
+            if [ -z "$use_dedicated_disk" ]; then
+                use_dedicated_disk="2"
+            fi
+            
+            if [ "$use_dedicated_disk" = "1" ]; then
+                # User wants to use a dedicated disk
+                read -p "Enter the disk device to use (e.g. /dev/sdb): " disk_device
+                
+                if [ -z "$disk_device" ]; then
+                    echo -e "${RED}No disk device specified. Please try again.${NC}"
+                    continue
+                fi
+                
+                # Confirm formatting - THIS IS DESTRUCTIVE
+                echo -e "${RED}WARNING: Formatting disk $disk_device will ERASE ALL DATA on this disk!${NC}"
+                read -p "Are you sure you want to format $disk_device? Type 'YES' to confirm: " format_confirm
+                
+                if [ "$format_confirm" != "YES" ]; then
+                    echo -e "${YELLOW}Disk formatting cancelled. Please select your storage option again.${NC}"
+                    continue
+                fi
+                
+                echo -e "${BLUE}Confirmed. Will prepare disk $disk_device.${NC}"
+                
+                # Ask for mount point
+                read -p "Enter mount point for the disk [/mnt/tharnax-nfs]: " nfs_local_path
+                
+                if [ -z "$nfs_local_path" ]; then
+                    nfs_local_path="/mnt/tharnax-nfs"
+                    echo -e "${BLUE}Using default mount point: ${GREEN}$nfs_local_path${NC}"
+                fi
+                
+                # Safety check if disk is already mounted before formatting
+                echo -e "${BLUE}Checking if disk is already mounted...${NC}"
+                
+                # Handle different auth types for SSH commands
+                SSH_CHECK_CMD=""
+                
+                if [ "$AUTH_TYPE" = "password" ]; then
+                    echo -e "${YELLOW}Enter SSH password to check disk mount status:${NC}"
+                    read -s ssh_password
+                    echo
+                    
+                    SSH_CHECK_CMD="SSHPASS=\"$ssh_password\" sshpass -e ssh -o StrictHostKeyChecking=no \"$SSH_USER@$MASTER_IP\""
+                else
+                    SSH_CHECK_CMD="ssh -o StrictHostKeyChecking=no -i \"$SSH_KEY\" \"$SSH_USER@$MASTER_IP\""
+                fi
+                
+                # Check if the disk is mounted at target path
+is_mounted=$(eval "$SSH_CHECK_CMD \"findmnt -S $disk_device -T $nfs_local_path || echo 'Not mounted'\"" 2>/dev/null)
+has_parts=$(eval "$SSH_CHECK_CMD \"findmnt $nfs_local_path 2>/dev/null | grep -q $disk_device || echo 'Not mounted'\"" 2>/dev/null)
+
+if [[ "$is_mounted" != *"Not mounted"* || "$has_parts" != *"Not mounted"* ]]; then
+                    echo -e "${RED}ERROR: The disk $disk_device or its partitions are currently mounted.${NC}"
+                    echo -e "${YELLOW}Automatic unmounting has been disabled for safety reasons.${NC}"
+                    echo -e "${YELLOW}Please manually unmount the disk before continuing:${NC}"
+                    echo
+                    echo -e "${BLUE}1. Check what is mounted with:${NC}"
+                    echo -e "   \$ findmnt | grep $(basename $disk_device)"
+                    echo
+                    echo -e "${BLUE}2. Unmount all affected paths:${NC}"
+                    echo -e "   \$ sudo umount <mounted_path>"
+                    echo
+                    echo -e "${BLUE}3. If the unmount fails due to the resource being busy, find which processes are using the disk:${NC}"
+                    echo -e "   \$ sudo lsof <mounted_path>"
+                    echo -e "   \$ sudo lsof $disk_device"
+                    echo
+                    echo -e "${BLUE}4. Stop those processes and try again.${NC}"
+                    echo
+                    echo -e "${YELLOW}After unmounting all partitions, run the script again.${NC}"
+                    return 1
+                else
+                    echo -e "${GREEN}Disk is not currently mounted. Safe to proceed.${NC}"
+                fi
+                
+                # Run the disk preparation playbook
+                echo -e "${BLUE}Preparing disk $disk_device and mounting to $nfs_local_path...${NC}"
+                
+                # Set partition option for the playbook
+                if [[ -z "$create_partition" || "$create_partition" =~ ^[Yy] ]]; then
+                    create_partition=true
+                    echo -e "${GREEN}Will create a new GPT partition table on $disk_device${NC}"
+                else
+                    create_partition=false
+                    echo -e "${YELLOW}Skipping partition table creation.${NC}"
+                fi
+                
+                # Try up to 3 times if there are errors
+                max_attempts=3
+                attempt=1
+                success=false
+                
+                while [ $attempt -le $max_attempts ] && [ "$success" = "false" ]; do
+                    echo -e "${YELLOW}Attempt $attempt of $max_attempts...${NC}"
+                    
+                    if [ "$AUTH_TYPE" = "password" ]; then
+                        cd ansible
+                        ansible-playbook -i inventory.ini nfs.yml --tags "disk_prep" --ask-pass --ask-become-pass \
+                            -e "disk_device=$disk_device disk_mount_point=$nfs_local_path disk_should_format=true disk_create_partition=$create_partition"
+                        result=$?
+                        cd ..
+                    else
+                        cd ansible
+                        ansible-playbook -i inventory.ini nfs.yml --tags "disk_prep" --ask-become-pass \
+                            -e "disk_device=$disk_device disk_mount_point=$nfs_local_path disk_should_format=true disk_create_partition=$create_partition"
+                        result=$?
+                        cd ..
+                    fi
+                    
+                    if [ $result -eq 0 ]; then
+                        success=true
+                        echo -e "${GREEN}Disk preparation succeeded on attempt $attempt.${NC}"
+                    else
+                        echo -e "${YELLOW}Disk preparation failed.${NC}"
+                        
+                        attempt=$((attempt+1))
+                        if [ $attempt -le $max_attempts ]; then
+                            echo -e "${YELLOW}Retrying disk preparation in 5 seconds...${NC}"
+                            sleep 5
+                        else
+                            echo -e "${RED}Disk preparation failed after $max_attempts attempts.${NC}"
+                            read -p "Would you like to try using a different directory instead? (Y/n): " try_directory
+                            if [[ -z "$try_directory" || "$try_directory" =~ ^[Yy] ]]; then
+                                disk_config_choice="directory"
+                                break
+                            else
+                                echo -e "${RED}Cannot continue with NFS setup. Aborting.${NC}"
+                                return 1
+                            fi
+                        fi
+                    fi
+                done
+                
+                disk_config_choice="disk"
+            elif [ "$use_dedicated_disk" = "2" ]; then
+                disk_config_choice="directory"
+            else
+                echo -e "${RED}Invalid choice. Please enter 1 or 2.${NC}"
+            fi
+        done
+        
+        # If we're using a directory path
+        if [ "$disk_config_choice" = "directory" ]; then
+            # Ask user for the mount point to use
+            echo ""
+            read -p "Enter the path to use for NFS storage [/mnt/tharnax-nfs]: " nfs_local_path
+            
+            # Use default if empty
+            if [ -z "$nfs_local_path" ]; then
+                nfs_local_path="/mnt/tharnax-nfs"
+                echo -e "${BLUE}Using default path: ${GREEN}$nfs_local_path${NC}"
+            fi
+            
+            # Confirm the path
+            echo -e "${BLUE}NFS will be configured at: ${GREEN}$nfs_local_path${NC}"
+            read -p "Is this correct? (Y/n): " confirm_path
+            if [[ "$confirm_path" =~ ^[Nn] ]]; then
+                read -p "Enter the correct path for NFS storage: " nfs_local_path
+                if [ -z "$nfs_local_path" ]; then
+                    echo -e "${YELLOW}No path entered. Using default path: /mnt/tharnax-nfs${NC}"
+                    nfs_local_path="/mnt/tharnax-nfs"
+                fi
+            fi
+        fi
+        
+        # Run the NFS server setup playbook
+        echo -e "${BLUE}Configuring NFS server on master node with path: ${GREEN}$nfs_local_path${NC}"
+        
+        if [ "$AUTH_TYPE" = "password" ]; then
+            cd ansible
+            ansible-playbook -i inventory.ini nfs.yml --tags "configure,client,provisioner" --ask-pass --ask-become-pass \
+                -e "nfs_export_path=$nfs_local_path nfs_path=$nfs_local_path"
+            cd ..
+        else
+            cd ansible
+            ansible-playbook -i inventory.ini nfs.yml --tags "configure,client,provisioner" --ask-become-pass \
+                -e "nfs_export_path=$nfs_local_path nfs_path=$nfs_local_path"
+            cd ..
+        fi
+        
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}Failed to configure NFS storage.${NC}"
+            return 1
+        fi
+        
+        # Set NFS server to master node IP and path to local path
+        nfs_server_ip="$MASTER_IP"
+        nfs_path="$nfs_local_path"
+    fi
+    
+    echo -e "${GREEN}NFS storage successfully configured for your Kubernetes cluster.${NC}"
+    echo -e "${GREEN}You can now use the storage class 'nfs-storage' for your persistent volumes.${NC}"
+    
+    return 0
 }
 
 uninstall() {
@@ -783,6 +1070,57 @@ EOF
     echo -e "${GREEN}Uninstallation complete!${NC}"
 }
 
+check_existing_k3s() {
+    echo -e "${BLUE}Checking for existing K3s installation...${NC}"
+    
+    if [ "$AUTH_TYPE" = "password" ]; then
+        # Use sshpass for password authentication
+        if ! command -v sshpass >/dev/null 2>&1; then
+            echo -e "${YELLOW}Warning: sshpass is required for checking K3s with password auth.${NC}"
+            echo -e "${YELLOW}Assuming K3s is not installed.${NC}"
+            return 1
+        fi
+        
+        echo -e "${YELLOW}Enter SSH password to check K3s status:${NC}"
+        read -s ssh_password
+        echo
+        
+        if SSHPASS="$ssh_password" sshpass -e ssh -o StrictHostKeyChecking=no "$SSH_USER@$MASTER_IP" "command -v kubectl && kubectl get nodes" &>/dev/null; then
+            node_count=$(SSHPASS="$ssh_password" sshpass -e ssh -o StrictHostKeyChecking=no "$SSH_USER@$MASTER_IP" "kubectl get nodes" 2>/dev/null | grep -v NAME | wc -l)
+            
+            # We expect at least 1 node (the master)
+            if [ "$node_count" -ge 1 ]; then
+                echo -e "${GREEN}K3s is already installed and running.${NC}"
+                
+                # Display the nodes
+                echo -e "${BLUE}Current cluster nodes:${NC}"
+                SSHPASS="$ssh_password" sshpass -e ssh -o StrictHostKeyChecking=no "$SSH_USER@$MASTER_IP" "kubectl get nodes" 2>/dev/null
+                
+                return 0
+            fi
+        fi
+    else
+        # Use SSH key authentication
+        if ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$SSH_USER@$MASTER_IP" "command -v kubectl && kubectl get nodes" &>/dev/null; then
+            node_count=$(ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$SSH_USER@$MASTER_IP" "kubectl get nodes" 2>/dev/null | grep -v NAME | wc -l)
+            
+            # We expect at least 1 node (the master)
+            if [ "$node_count" -ge 1 ]; then
+                echo -e "${GREEN}K3s is already installed and running.${NC}"
+                
+                # Display the nodes
+                echo -e "${BLUE}Current cluster nodes:${NC}"
+                ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$SSH_USER@$MASTER_IP" "kubectl get nodes" 2>/dev/null
+                
+                return 0
+            fi
+        fi
+    fi
+    
+    echo -e "${YELLOW}K3s is not installed or not running properly.${NC}"
+    return 1
+}
+
 parse_args "$@"
 
 print_banner
@@ -809,6 +1147,34 @@ else
     echo -e "${YELLOW}No saved configuration found. Starting fresh.${NC}"
 fi
 
+# Check if K3s is installed when specific components are requested
+if [ "$COMPONENT_K3S" = false ]; then
+    # We're only installing specific components, so K3s must be installed
+    echo -e "${BLUE}Checking for existing K3s installation...${NC}"
+    
+    # Configure SSH info if not already set
+    if [ -z "$SSH_USER" ] || [ -z "$AUTH_TYPE" ] || [ -z "$MASTER_IP" ]; then
+        echo -e "${BLUE}Collecting required connection information...${NC}"
+        detect_master_ip
+        collect_ssh_info
+        check_sshpass
+    fi
+    
+    if ! check_existing_k3s; then
+        echo -e "${RED}ERROR: K3s is not installed but is required for the requested component(s).${NC}"
+        echo -e "${YELLOW}Please first install K3s by running: ${NC}${GREEN}./tharnax-init.sh${NC}${YELLOW} without options${NC}"
+        exit 1
+    fi
+    
+    # K3s is installed, so let's set up the inventory
+    echo -e "${BLUE}Setting up inventory for component installation...${NC}"
+    create_inventory
+    check_ansible
+    
+    # We'll continue below with the component installation
+fi
+
+# Standard full installation flow below
 echo -e "${BLUE}Starting master IP detection...${NC}"
 detect_master_ip
 echo -e "${BLUE}Starting worker configuration...${NC}"
@@ -827,16 +1193,66 @@ create_sample_playbook
 echo ""
 echo -e "${GREEN}Configuration complete!${NC}"
 echo ""
-echo -e "${YELLOW}Ready to run Ansible playbook to deploy K3s.${NC}"
-read -p "Proceed with deployment? (Y/n): " proceed
 
-if [[ -z "$proceed" || "$proceed" =~ ^[Yy] ]]; then
-    run_ansible
-    echo -e "${GREEN}Tharnax initialization complete!${NC}"
-    
-    # Deploy the Tharnax Web UI after successful K3s deployment
-    deploy_web_ui
+# Check if K3s is already installed
+k3s_installed=false
+if check_existing_k3s; then
+    k3s_installed=true
+    echo -e "${GREEN}K3s is already installed and running.${NC}"
+    echo -e "${YELLOW}Proceeding with additional component installation.${NC}"
 else
-    echo "Deployment cancelled. You can run the Ansible playbook later with:"
-    echo "cd ansible && ansible-playbook -i inventory.ini playbook.yml"
-fi 
+    echo -e "${YELLOW}Ready to run Ansible playbook to deploy K3s.${NC}"
+    read -p "Proceed with deployment? (Y/n): " proceed
+    
+    if [[ -z "$proceed" || "$proceed" =~ ^[Yy] ]]; then
+        run_ansible
+        echo -e "${GREEN}K3s installation complete!${NC}"
+    else
+        echo "Deployment cancelled. You can run the Ansible playbook later with:"
+        echo "cd ansible && ansible-playbook -i inventory.ini playbook.yml"
+        exit 0
+    fi
+fi
+
+# Install NFS storage
+if [ "$COMPONENT_K3S" = true ]; then
+    # In full installation mode, ask about NFS
+    echo -e "${YELLOW}Do you want to configure NFS storage for your cluster? ${NC}"
+    read -p "Configure NFS storage? (Y/n): " setup_nfs
+    
+    if [[ -z "$setup_nfs" || "$setup_nfs" =~ ^[Yy] ]]; then
+        configure_nfs_storage
+    else
+        echo -e "${YELLOW}NFS storage configuration skipped.${NC}"
+        echo -e "${YELLOW}You can configure it later manually.${NC}"
+    fi
+else
+    # In component-only mode, just install NFS if requested
+    if [ "$COMPONENT_NFS" = true ]; then
+        echo -e "${BLUE}Installing NFS storage component...${NC}"
+        configure_nfs_storage
+    fi
+fi
+
+# Deploy the Tharnax Web UI
+if [ "$COMPONENT_K3S" = true ]; then
+    # In full installation mode, ask about Web UI
+    echo -e "${YELLOW}Do you want to deploy the Web UI for your cluster? ${NC}"
+    read -p "Deploy Web UI? (Y/n): " deploy_ui
+    
+    if [[ -z "$deploy_ui" || "$deploy_ui" =~ ^[Yy] ]]; then
+        deploy_web_ui
+    else
+        echo -e "${YELLOW}Web UI deployment skipped.${NC}"
+        echo -e "${YELLOW}You can deploy it later by running:${NC}"
+        echo -e "${YELLOW}./tharnax-web/deploy.sh${NC}"
+    fi
+else
+    # In component-only mode, just install UI if requested
+    if [ "$COMPONENT_UI" = true ]; then
+        echo -e "${BLUE}Installing Web UI component...${NC}"
+        deploy_web_ui
+    fi
+fi
+
+echo -e "${GREEN}Tharnax installation complete!${NC}"
