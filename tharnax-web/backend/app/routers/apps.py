@@ -2,6 +2,9 @@ from fastapi import APIRouter, Depends
 from app.kubernetes.client import get_k8s_client
 from kubernetes import client
 from typing import List, Dict, Any
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/apps",
@@ -57,9 +60,12 @@ async def get_available_apps(k8s_client: client.CoreV1Api = Depends(get_k8s_clie
     apps_with_status = []
     
     try:
+        logger.info("Fetching available applications")
+        
         # Get all namespaces to check for app namespaces
         namespaces = k8s_client.list_namespace()
         namespace_names = [ns.metadata.name for ns in namespaces.items]
+        logger.info(f"Found {len(namespace_names)} namespaces")
         
         for app in AVAILABLE_APPS:
             # This is simplistic - in reality we'd check for specific resources
@@ -67,13 +73,16 @@ async def get_available_apps(k8s_client: client.CoreV1Api = Depends(get_k8s_clie
             app_data["installed"] = app["id"] in namespace_names
             apps_with_status.append(app_data)
             
+        logger.info(f"Returning {len(apps_with_status)} applications")
         return apps_with_status
     except Exception as e:
-        # On error, return apps with unknown status
+        logger.error(f"Error fetching applications: {str(e)}")
+        
+        # On error, still return the apps with error status
         for app in AVAILABLE_APPS:
             app_data = app.copy()
             app_data["installed"] = False
-            app_data["status_error"] = str(e)
+            app_data["status_error"] = True
             apps_with_status.append(app_data)
         
         return apps_with_status 

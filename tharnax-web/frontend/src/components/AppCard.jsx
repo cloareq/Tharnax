@@ -7,16 +7,24 @@ import {
 } from '@heroicons/react/24/outline';
 import { apiClient } from '../services/api';
 
-const AppCard = ({ app }) => {
+const AppCard = ({ app = {} }) => {
+    const {
+        id = 'unknown',
+        name = 'Unknown App',
+        description = 'No description available',
+        category = 'misc',
+        installed = false
+    } = app;
+
     const [installing, setInstalling] = useState(false);
-    const [status, setStatus] = useState(app.installed ? 'installed' : 'notInstalled');
+    const [status, setStatus] = useState(installed ? 'installed' : 'notInstalled');
 
     const handleInstall = async () => {
         try {
             setInstalling(true);
             setStatus('installing');
 
-            await apiClient.post(`/install/${app.id}`);
+            await apiClient.post(`/install/${id}`);
 
             // In a real app, we would poll for status until complete
             // For now, simulate a successful installation after 3 seconds
@@ -27,7 +35,7 @@ const AppCard = ({ app }) => {
         } catch (error) {
             setStatus('error');
             setInstalling(false);
-            console.error(`Error installing ${app.id}:`, error);
+            console.error(`Error installing ${id}:`, error);
         }
     };
 
@@ -51,12 +59,12 @@ const AppCard = ({ app }) => {
             <div className="flex justify-between items-start">
                 <div className="flex-1">
                     <div className="flex items-center">
-                        <h3 className="text-lg font-medium text-tharnax-text">{app.name}</h3>
+                        <h3 className="text-lg font-medium text-tharnax-text">{name}</h3>
                         <div className="ml-2">{getStatusIcon()}</div>
                     </div>
-                    <p className="mt-1 text-sm text-gray-400">{app.description}</p>
+                    <p className="mt-1 text-sm text-gray-400">{description}</p>
                     <div className="mt-2 inline-block px-2 py-1 text-xs font-medium rounded-full bg-gray-700">
-                        {app.category}
+                        {category}
                     </div>
                 </div>
 
@@ -64,10 +72,10 @@ const AppCard = ({ app }) => {
                     onClick={handleInstall}
                     disabled={installing || status === 'installed'}
                     className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${status === 'installed'
-                            ? 'bg-gray-700 text-gray-400 cursor-not-allowed'
-                            : installing
-                                ? 'bg-yellow-600 text-white cursor-wait'
-                                : 'bg-tharnax-accent text-white hover:bg-blue-700'
+                        ? 'bg-gray-700 text-gray-400 cursor-not-allowed'
+                        : installing
+                            ? 'bg-yellow-600 text-white cursor-wait'
+                            : 'bg-tharnax-accent text-white hover:bg-blue-700'
                         }`}
                 >
                     {status === 'installed' ? 'Installed' : installing ? 'Installing...' : 'Install'}

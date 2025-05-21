@@ -14,16 +14,25 @@ const AppCatalog = () => {
             try {
                 setLoading(true);
                 const response = await apiClient.get('/apps');
-                setApps(response.data);
 
-                // Extract unique categories
-                const uniqueCategories = [...new Set(response.data.map(app => app.category))];
+                // Make sure data is an array
+                const appsData = Array.isArray(response.data) ? response.data : [];
+                setApps(appsData);
+
+                // Extract unique categories safely
+                const uniqueCategories = Array.isArray(appsData) && appsData.length > 0
+                    ? [...new Set(appsData.map(app => app.category))]
+                    : [];
                 setCategories(uniqueCategories);
 
                 setError(null);
             } catch (err) {
-                setError('Failed to fetch available applications');
                 console.error('Error fetching applications:', err);
+                setError('Failed to fetch available applications. Backend might be unavailable.');
+
+                // Set empty arrays as fallback
+                setApps([]);
+                setCategories([]);
             } finally {
                 setLoading(false);
             }
@@ -32,9 +41,34 @@ const AppCatalog = () => {
         fetchApps();
     }, []);
 
+    // Mock data for development
+    const mockApps = [
+        {
+            id: "prometheus",
+            name: "Prometheus",
+            description: "Monitoring and alerting toolkit",
+            category: "monitoring",
+            icon: "monitoring",
+            installed: false
+        },
+        {
+            id: "grafana",
+            name: "Grafana",
+            description: "Metrics visualization and dashboards",
+            category: "monitoring",
+            icon: "dashboard",
+            installed: false
+        }
+    ];
+
+    // Use mock data if no apps are available and we're in development
+    const displayApps = apps.length > 0 ? apps : (
+        process.env.NODE_ENV === 'development' ? mockApps : []
+    );
+
     const filteredApps = selectedCategory === 'all'
-        ? apps
-        : apps.filter(app => app.category === selectedCategory);
+        ? displayApps
+        : displayApps.filter(app => app.category === selectedCategory);
 
     return (
         <div>
@@ -45,7 +79,8 @@ const AppCatalog = () => {
 
             {error && (
                 <div className="mb-6 p-4 bg-red-900/30 border border-red-700 rounded-md text-red-300">
-                    {error}
+                    <p className="font-bold mb-2">Error</p>
+                    <p>{error}</p>
                 </div>
             )}
 
@@ -54,8 +89,8 @@ const AppCatalog = () => {
                 <button
                     onClick={() => setSelectedCategory('all')}
                     className={`px-4 py-2 rounded-full text-sm font-medium ${selectedCategory === 'all'
-                            ? 'bg-tharnax-accent text-white'
-                            : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                        ? 'bg-tharnax-accent text-white'
+                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
                         }`}
                 >
                     All
@@ -66,8 +101,8 @@ const AppCatalog = () => {
                         key={category}
                         onClick={() => setSelectedCategory(category)}
                         className={`px-4 py-2 rounded-full text-sm font-medium ${selectedCategory === category
-                                ? 'bg-tharnax-accent text-white'
-                                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                            ? 'bg-tharnax-accent text-white'
+                            : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
                             }`}
                     >
                         {category.charAt(0).toUpperCase() + category.slice(1)}
@@ -82,7 +117,7 @@ const AppCatalog = () => {
                 </div>
             ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {filteredApps.length > 0 ? (
+                    {filteredApps && filteredApps.length > 0 ? (
                         filteredApps.map(app => (
                             <AppCard key={app.id} app={app} />
                         ))
