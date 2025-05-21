@@ -8,6 +8,9 @@ const apiClient = axios.create({
     },
 });
 
+// Export the apiClient for direct use
+export { apiClient };
+
 // Add response interceptor for error handling
 apiClient.interceptors.response.use(
     response => response,
