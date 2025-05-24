@@ -59,27 +59,20 @@ def create_monitoring_argocd_application(nfs_available: bool, nfs_path: Optional
                 "scrapeInterval": "30s",
                 "evaluationInterval": "30s",
                 "enableAdminAPI": True,
-                "walCompression": True,
-                "portName": "web",
-                "listenLocal": False,
-                "enableRemoteWriteReceiver": False,
-                "disableCompaction": False,
-                "enableFeatures": [],
-                "web": {
-                    "enableLifecycle": True,
-                    "enableAdminAPI": True,
-                    "routePrefix": "/",
-                    "externalUrl": ""
-                }
+                "walCompression": True
             },
             "service": {
                 "type": "LoadBalancer",
-                "port": 9090,
-                "targetPort": 9090,
-                "additionalPorts": [
+                "ports": [
                     {
-                        "name": "reloader-web",
-                        "port": 8081,
+                        "name": "web",
+                        "port": 9090,
+                        "targetPort": 9090,
+                        "protocol": "TCP"
+                    },
+                    {
+                        "name": "admin",
+                        "port": 8181,
                         "targetPort": 8080,
                         "protocol": "TCP"
                     }
@@ -123,34 +116,7 @@ def create_monitoring_argocd_application(nfs_available: bool, nfs_path: Optional
         },
         "prometheusOperator": {
             "enabled": True,
-            "manageCrds": False,  # Don't manage CRDs to avoid issues
-            "prometheusConfigReloader": {
-                "resources": {
-                    "requests": {
-                        "cpu": "200m",
-                        "memory": "50Mi"
-                    },
-                    "limits": {
-                        "cpu": "200m", 
-                        "memory": "50Mi"
-                    }
-                }
-            },
-            "admissionWebhooks": {
-                "enabled": True,
-                "patch": {
-                    "enabled": True,
-                    "image": {
-                        "pullPolicy": "IfNotPresent"
-                    }
-                },
-                "certManager": {
-                    "enabled": False
-                }
-            },
-            "tls": {
-                "enabled": True
-            }
+            "manageCrds": False  # Don't manage CRDs to avoid issues
         },
         "global": {
             "scrape_interval": "15s",
