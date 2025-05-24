@@ -15,10 +15,10 @@ const AppCatalog = () => {
             setLoading(true);
             const appsData = await apiClient.get('/apps');
 
-            if (Array.isArray(appsData?.data?.apps)) {
-                setApps(appsData.data.apps);
+            if (Array.isArray(appsData?.data)) {
+                setApps(appsData.data);
 
-                const categories = appsData.data.apps
+                const categories = appsData.data
                     .map(app => app.category || 'misc')
                     .filter((category, index, array) => array.indexOf(category) === index);
 
