@@ -60,32 +60,6 @@ def create_monitoring_argocd_application(nfs_available: bool, nfs_path: Optional
                 "evaluationInterval": "30s",
                 "enableAdminAPI": True,
                 "walCompression": True
-            },
-            "service": {
-                "type": "LoadBalancer",
-                "ports": [
-                    {
-                        "name": "web",
-                        "port": 9090,
-                        "targetPort": 9090,
-                        "protocol": "TCP"
-                    },
-                    {
-                        "name": "admin",
-                        "port": 8181,
-                        "targetPort": 8080,
-                        "protocol": "TCP"
-                    }
-                ]
-            },
-            "servicePerReplica": {
-                "enabled": False
-            },
-            "podDisruptionBudget": {
-                "enabled": False
-            },
-            "serviceMonitor": {
-                "enabled": True
             }
         },
         "grafana": {

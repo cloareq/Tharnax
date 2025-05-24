@@ -177,7 +177,6 @@ async def get_available_apps(k8s_client: client.CoreV1Api = Depends(get_k8s_clie
                     try:
                         services = k8s_client.list_namespaced_service(namespace="monitoring")
                         grafana_url = None
-                        prometheus_url = None
                         
                         # Get master node IP for fallback
                         master_ip = "localhost"
@@ -204,24 +203,10 @@ async def get_available_apps(k8s_client: client.CoreV1Api = Depends(get_k8s_clie
                                 else:
                                     # ClusterIP service
                                     grafana_url = f"http://{master_ip}:3000"
-                            
-                            # Check Prometheus service
-                            if "prometheus" in svc.metadata.name.lower() and "operated" not in svc.metadata.name.lower():
-                                if svc.spec.type == "LoadBalancer":
-                                    if svc.status.load_balancer.ingress:
-                                        lb_ip = svc.status.load_balancer.ingress[0].ip
-                                        prometheus_url = f"http://{lb_ip}:9090"
-                                    else:
-                                        # LoadBalancer pending, use node IP fallback  
-                                        prometheus_url = f"http://{master_ip}:9090"
-                                else:
-                                    # ClusterIP service
-                                    prometheus_url = f"http://{master_ip}:9090"
                         
-                        # Set URLs for the monitoring stack
+                        # Set URLs for the monitoring stack (only Grafana is exposed)
                         app_data["urls"] = {
-                            "grafana": grafana_url or f"http://{master_ip}:3000",
-                            "prometheus": prometheus_url or f"http://{master_ip}:9090"
+                            "grafana": grafana_url or f"http://{master_ip}:3000"
                         }
                         
                         # Keep the legacy single URL for backward compatibility (defaults to Grafana)
@@ -230,8 +215,7 @@ async def get_available_apps(k8s_client: client.CoreV1Api = Depends(get_k8s_clie
                     except Exception as e:
                         logger.warning(f"Could not determine monitoring URLs: {str(e)}")
                         app_data["urls"] = {
-                            "grafana": f"http://localhost:3000",
-                            "prometheus": f"http://localhost:9090"
+                            "grafana": f"http://localhost:3000"
                         }
                         app_data["url"] = "http://localhost:3000"
                 else:
