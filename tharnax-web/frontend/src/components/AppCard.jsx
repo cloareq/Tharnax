@@ -3,7 +3,8 @@ import {
     ArrowRightIcon,
     CheckCircleIcon,
     XCircleIcon,
-    ClockIcon
+    ClockIcon,
+    ExternalLinkIcon
 } from '@heroicons/react/24/outline';
 import { apiClient } from '../services/api';
 
@@ -13,7 +14,8 @@ const AppCard = ({ app = {} }) => {
         name = 'Unknown App',
         description = 'No description available',
         category = 'misc',
-        installed = false
+        installed = false,
+        url = null
     } = app;
 
     const [installing, setInstalling] = useState(false);
@@ -39,6 +41,12 @@ const AppCard = ({ app = {} }) => {
         }
     };
 
+    const handleAppClick = () => {
+        if (url && (status === 'installed' || installed)) {
+            window.open(url, '_blank', 'noopener,noreferrer');
+        }
+    };
+
     const getStatusIcon = () => {
         switch (status) {
             case 'installed':
@@ -54,13 +62,23 @@ const AppCard = ({ app = {} }) => {
         }
     };
 
+    const isClickable = url && (status === 'installed' || installed);
+
     return (
         <div className="bg-tharnax-primary rounded-lg shadow-md p-5">
             <div className="flex justify-between items-start">
-                <div className="flex-1">
+                <div
+                    className={`flex-1 ${isClickable ? 'cursor-pointer' : ''}`}
+                    onClick={isClickable ? handleAppClick : undefined}
+                >
                     <div className="flex items-center">
-                        <h3 className="text-lg font-medium text-tharnax-text">{name}</h3>
+                        <h3 className={`text-lg font-medium text-tharnax-text ${isClickable ? 'hover:text-blue-400' : ''}`}>
+                            {name}
+                        </h3>
                         <div className="ml-2">{getStatusIcon()}</div>
+                        {isClickable && (
+                            <ExternalLinkIcon className="ml-2 h-4 w-4 text-gray-400" />
+                        )}
                     </div>
                     <p className="mt-1 text-sm text-gray-400">{description}</p>
                     <div className="mt-2 inline-block px-2 py-1 text-xs font-medium rounded-full bg-gray-700">

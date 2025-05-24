@@ -15,6 +15,7 @@ CONFIG_FILE=".tharnax.conf"
 # Initialize component flags
 COMPONENT_UI=false
 COMPONENT_NFS=false
+COMPONENT_ARGOCD=false
 COMPONENT_K3S=true  # Default to true, will be set to false if specific components are selected
 
 show_usage() {
@@ -25,8 +26,9 @@ show_usage() {
     echo "  -u, --uninstall Uninstall K3s from all nodes and clean up"
     echo "  --nfs           Install only NFS storage (requires K3s already installed)"
     echo "  --ui            Install only Web UI (requires K3s already installed)"
+    echo "  --argocd        Install only Argo CD (requires K3s already installed)"
     echo
-    echo "Without options, runs the full installation process (K3s + NFS + UI)"
+    echo "Without options, runs the full installation process (K3s + NFS + UI + ArgoCD)"
 }
 
 parse_args() {
@@ -51,6 +53,10 @@ parse_args() {
                 COMPONENT_UI=true
                 SPECIFIC_COMPONENTS=true
                 ;;
+            --argocd)
+                COMPONENT_ARGOCD=true
+                SPECIFIC_COMPONENTS=true
+                ;;
             *)
                 echo -e "${RED}Unknown option: $key${NC}"
                 show_usage
@@ -67,6 +73,7 @@ parse_args() {
         # If no specific components are selected, install everything
         COMPONENT_NFS=true
         COMPONENT_UI=true
+        COMPONENT_ARGOCD=true
     fi
 }
 
@@ -690,6 +697,128 @@ deploy_web_ui() {
     fi
 }
 
+deploy_argocd() {
+    echo ""
+    echo -e "${BLUE}Deploying Argo CD...${NC}"
+    echo -e "${YELLOW}This will deploy Argo CD for GitOps continuous deployment to your cluster.${NC}"
+    
+    # Check for kubectl
+    if ! command -v kubectl >/dev/null 2>&1; then
+        echo -e "${YELLOW}kubectl is required to deploy Argo CD.${NC}"
+        echo -e "${YELLOW}Installing kubectl from k3s...${NC}"
+        sudo ln -sf /usr/local/bin/k3s /usr/local/bin/kubectl
+        
+        if ! command -v kubectl >/dev/null 2>&1; then
+            echo -e "${RED}Failed to set up kubectl. Deployment aborted.${NC}"
+            return 1
+        fi
+    fi
+    
+    # Create the argocd namespace
+    echo -e "${BLUE}Creating argocd namespace...${NC}"
+    kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+    
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Failed to create argocd namespace.${NC}"
+        return 1
+    fi
+    
+    # Install Argo CD
+    echo -e "${BLUE}Installing Argo CD...${NC}"
+    kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+    
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Failed to install Argo CD.${NC}"
+        return 1
+    fi
+    
+    # Wait for Argo CD to be partially ready before patching the service
+    echo -e "${BLUE}Waiting for Argo CD server service to be created...${NC}"
+    timeout=60
+    counter=0
+    while [ $counter -lt $timeout ]; do
+        if kubectl get service argocd-server -n argocd >/dev/null 2>&1; then
+            echo -e "${GREEN}Argo CD server service found.${NC}"
+            break
+        fi
+        echo -n "."
+        sleep 2
+        counter=$((counter + 2))
+    done
+    
+    if [ $counter -ge $timeout ]; then
+        echo -e "${RED}Timeout waiting for Argo CD server service to be created.${NC}"
+        return 1
+    fi
+    
+    # Patch the argocd-server service to use LoadBalancer
+    echo -e "${BLUE}Patching argocd-server service to use LoadBalancer...${NC}"
+    
+    # Create a temporary service patch file
+    cat > /tmp/argocd-server-service.yaml << EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: argocd-server
+  namespace: argocd
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+  selector:
+    app.kubernetes.io/name: argocd-server
+EOF
+    
+    kubectl apply -f /tmp/argocd-server-service.yaml
+    
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Failed to patch argocd-server service.${NC}"
+        return 1
+    fi
+    
+    # Clean up temporary file
+    rm -f /tmp/argocd-server-service.yaml
+    
+    # Wait for Argo CD server pod to be ready
+    echo -e "${BLUE}Waiting for Argo CD server to be ready...${NC}"
+    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server -n argocd --timeout=300s
+    
+    if [ $? -ne 0 ]; then
+        echo -e "${YELLOW}Argo CD server pod may not be fully ready yet, but continuing...${NC}"
+    fi
+    
+    # Get the access URL
+    echo -e "${BLUE}Retrieving Argo CD access information...${NC}"
+    
+    # Try to get LoadBalancer IP, fallback to master IP
+    ARGOCD_IP=$(kubectl -n argocd get service argocd-server -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+    
+    if [ -z "$ARGOCD_IP" ]; then
+        ARGOCD_IP="$MASTER_IP"
+        echo -e "${YELLOW}LoadBalancer IP not yet assigned, using master IP: ${ARGOCD_IP}${NC}"
+    else
+        echo -e "${GREEN}LoadBalancer IP assigned: ${ARGOCD_IP}${NC}"
+    fi
+    
+    ARGOCD_URL="http://${ARGOCD_IP}:8080"
+    
+    # Save Argo CD URL to config
+    if [ -f "$CONFIG_FILE" ]; then
+        # Remove any existing ARGOCD_URL line and add the new one
+        grep -v "^ARGOCD_URL=" "$CONFIG_FILE" > "$CONFIG_FILE.tmp" 2>/dev/null || true
+        echo "ARGOCD_URL=\"$ARGOCD_URL\"" >> "$CONFIG_FILE.tmp"
+        mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+        chmod 600 "$CONFIG_FILE"
+    fi
+    
+    echo -e "${GREEN}Argo CD deployment completed.${NC}"
+    echo -e "${BLUE}Note: It may take a few minutes for Argo CD to be fully accessible.${NC}"
+    
+    return 0
+}
+
 configure_nfs_storage() {
     echo ""
     echo -e "${BLUE}Configuring NFS Storage for Kubernetes${NC}"
@@ -1172,23 +1301,23 @@ if [ "$COMPONENT_K3S" = false ]; then
     check_ansible
     
     # We'll continue below with the component installation
+else
+    # Standard full installation flow below
+    echo -e "${BLUE}Starting master IP detection...${NC}"
+    detect_master_ip
+    echo -e "${BLUE}Starting worker configuration...${NC}"
+    collect_worker_info
+    echo -e "${BLUE}Starting SSH configuration...${NC}"
+    collect_ssh_info
+    echo -e "${BLUE}Checking for sshpass...${NC}"
+    check_sshpass
+    echo -e "${BLUE}Creating inventory...${NC}"
+    create_inventory
+    echo -e "${BLUE}Checking for Ansible...${NC}"
+    check_ansible
+    echo -e "${BLUE}Creating sample playbook...${NC}"
+    create_sample_playbook
 fi
-
-# Standard full installation flow below
-echo -e "${BLUE}Starting master IP detection...${NC}"
-detect_master_ip
-echo -e "${BLUE}Starting worker configuration...${NC}"
-collect_worker_info
-echo -e "${BLUE}Starting SSH configuration...${NC}"
-collect_ssh_info
-echo -e "${BLUE}Checking for sshpass...${NC}"
-check_sshpass
-echo -e "${BLUE}Creating inventory...${NC}"
-create_inventory
-echo -e "${BLUE}Checking for Ansible...${NC}"
-check_ansible
-echo -e "${BLUE}Creating sample playbook...${NC}"
-create_sample_playbook
 
 echo ""
 echo -e "${GREEN}Configuration complete!${NC}"
@@ -1242,6 +1371,10 @@ if [ "$COMPONENT_K3S" = true ]; then
     
     if [[ -z "$deploy_ui" || "$deploy_ui" =~ ^[Yy] ]]; then
         deploy_web_ui
+        
+        # Automatically deploy Argo CD after Web UI
+        echo -e "${BLUE}Deploying Argo CD...${NC}"
+        deploy_argocd
     else
         echo -e "${YELLOW}Web UI deployment skipped.${NC}"
         echo -e "${YELLOW}You can deploy it later by running:${NC}"
@@ -1253,6 +1386,57 @@ else
         echo -e "${BLUE}Installing Web UI component...${NC}"
         deploy_web_ui
     fi
+    # In component-only mode, just install Argo CD if requested
+    if [ "$COMPONENT_ARGOCD" = true ]; then
+        echo -e "${BLUE}Installing Argo CD component...${NC}"
+        deploy_argocd
+    fi
 fi
 
-echo -e "${GREEN}Tharnax installation complete!${NC}"
+echo ""
+echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║                                                              ║${NC}"
+echo -e "${GREEN}║               🚀 Tharnax Installation Complete! 🚀          ║${NC}"
+echo -e "${GREEN}║                                                              ║${NC}"
+echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
+echo ""
+
+# Load config to get URLs
+if [ -f "$CONFIG_FILE" ]; then
+    . "$CONFIG_FILE"
+fi
+
+# Show Web UI information if available
+if command -v kubectl >/dev/null 2>&1; then
+    UI_IP=$(kubectl -n tharnax-web get service tharnax-web -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+    if [ -z "$UI_IP" ]; then
+        UI_IP="$MASTER_IP"
+    fi
+    UI_URL="http://${UI_IP}"
+    
+    echo -e "${BLUE}🌐 Web UI Access:${NC}"
+    echo -e "${GREEN}   ${UI_URL}${NC}"
+    echo ""
+fi
+
+# Show Argo CD information if deployed
+if command -v kubectl >/dev/null 2>&1 && kubectl get namespace argocd >/dev/null 2>&1; then
+    ARGOCD_IP=$(kubectl -n argocd get service argocd-server -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+    if [ -z "$ARGOCD_IP" ]; then
+        ARGOCD_IP="$MASTER_IP"
+    fi
+    ARGOCD_URL="http://${ARGOCD_IP}:8080"
+    
+    echo -e "${BLUE}🚀 Argo CD Access:${NC}"
+    echo -e "${GREEN}   ${ARGOCD_URL}${NC}"
+    echo -e "${BLUE}   Username: ${GREEN}admin${NC}"
+    echo -e "${BLUE}   Get password: ${YELLOW}kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath=\"{.data.password}\" | base64 -d${NC}"
+    echo ""
+fi
+
+echo -e "${BLUE}💡 Next Steps:${NC}"
+echo -e "${YELLOW}   • Access your cluster via the Web UI${NC}"
+echo -e "${YELLOW}   • Set up GitOps workflows in Argo CD${NC}"
+echo -e "${YELLOW}   • Deploy applications using Kubernetes manifests${NC}"
+echo ""
+echo -e "${GREEN}Happy homelabbing! 🏠✨${NC}"

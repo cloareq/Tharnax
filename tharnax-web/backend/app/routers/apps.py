@@ -14,11 +14,12 @@ router = APIRouter(
 # Define available applications
 AVAILABLE_APPS = [
     {
-        "id": "nfs-server",
-        "name": "NFS Server",
-        "description": "Network File System server for cluster storage",
-        "category": "storage",
-        "icon": "storage"
+        "id": "argocd",
+        "name": "Argo CD",
+        "description": "GitOps continuous delivery tool for Kubernetes",
+        "category": "cicd",
+        "icon": "rocket",
+        "url": "http://localhost:8080"  # This will be dynamically set based on cluster configuration
     },
     {
         "id": "jellyfin",
@@ -55,8 +56,6 @@ async def get_available_apps(k8s_client: client.CoreV1Api = Depends(get_k8s_clie
     """
     Get list of available applications and their installation status
     """
-    # Here we would check if apps are installed by looking for deployments, services, etc.
-    # For now, we'll just return the static list with a placeholder status
     apps_with_status = []
     
     try:
@@ -68,9 +67,54 @@ async def get_available_apps(k8s_client: client.CoreV1Api = Depends(get_k8s_clie
         logger.info(f"Found {len(namespace_names)} namespaces")
         
         for app in AVAILABLE_APPS:
-            # This is simplistic - in reality we'd check for specific resources
             app_data = app.copy()
-            app_data["installed"] = app["id"] in namespace_names
+            
+            # Special handling for ArgoCD
+            if app["id"] == "argocd":
+                argocd_installed = "argocd" in namespace_names
+                app_data["installed"] = argocd_installed
+                
+                if argocd_installed:
+                    # Try to get the ArgoCD service URL
+                    try:
+                        services = k8s_client.list_namespaced_service(namespace="argocd")
+                        argocd_service = None
+                        
+                        for svc in services.items:
+                            if svc.metadata.name == "argocd-server":
+                                argocd_service = svc
+                                break
+                        
+                        if argocd_service:
+                            # Check if it's a LoadBalancer service
+                            if argocd_service.spec.type == "LoadBalancer":
+                                if argocd_service.status.load_balancer.ingress:
+                                    lb_ip = argocd_service.status.load_balancer.ingress[0].ip
+                                    app_data["url"] = f"http://{lb_ip}:8080"
+                                else:
+                                    # LoadBalancer pending, use node IP fallback
+                                    # Try to get master node IP
+                                    nodes = k8s_client.list_node()
+                                    if nodes.items:
+                                        for address in nodes.items[0].status.addresses:
+                                            if address.type == "InternalIP":
+                                                app_data["url"] = f"http://{address.address}:8080"
+                                                break
+                            else:
+                                # Not a LoadBalancer, use generic localhost
+                                app_data["url"] = "http://localhost:8080"
+                        else:
+                            app_data["url"] = "http://localhost:8080"
+                    except Exception as e:
+                        logger.warning(f"Could not determine ArgoCD URL: {str(e)}")
+                        app_data["url"] = "http://localhost:8080"
+                else:
+                    # Not installed, remove URL
+                    app_data.pop("url", None)
+            else:
+                # For other apps, simple namespace check
+                app_data["installed"] = app["id"] in namespace_names
+            
             apps_with_status.append(app_data)
             
         logger.info(f"Returning {len(apps_with_status)} applications")
@@ -83,6 +127,8 @@ async def get_available_apps(k8s_client: client.CoreV1Api = Depends(get_k8s_clie
             app_data = app.copy()
             app_data["installed"] = False
             app_data["status_error"] = True
+            # Remove URL for safety on error
+            app_data.pop("url", None)
             apps_with_status.append(app_data)
         
         return apps_with_status 
