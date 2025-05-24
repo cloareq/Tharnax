@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from app.kubernetes.client import get_k8s_client
 from app.services.installer import install_component
+from app.routers.apps import check_monitoring_argocd_status
 from kubernetes import client
 from typing import Dict, Any
 import logging
@@ -129,14 +130,13 @@ async def get_install_status(
             
             # If installation is completed, also check actual deployment status
             if status_info["status"] == "completed":
-                # Verify the component is actually installed by checking namespace
-                namespaces = k8s_client.list_namespace()
-                namespace_names = [ns.metadata.name for ns in namespaces.items]
-                
-                # For monitoring, check if monitoring namespace exists
+                # Verify the component is actually installed
                 if component == "monitoring":
-                    actually_installed = "monitoring" in namespace_names
+                    actually_installed = await check_monitoring_argocd_status(k8s_client)
                 else:
+                    # For other components, check if namespace exists
+                    namespaces = k8s_client.list_namespace()
+                    namespace_names = [ns.metadata.name for ns in namespaces.items]
                     actually_installed = component in namespace_names
                 
                 if not actually_installed:
@@ -146,12 +146,11 @@ async def get_install_status(
             return status_info
         else:
             # No installation status, check if component is already installed
-            namespaces = k8s_client.list_namespace()
-            namespace_names = [ns.metadata.name for ns in namespaces.items]
-            
             if component == "monitoring":
-                installed = "monitoring" in namespace_names
+                installed = await check_monitoring_argocd_status(k8s_client)
             else:
+                namespaces = k8s_client.list_namespace()
+                namespace_names = [ns.metadata.name for ns in namespaces.items]
                 installed = component in namespace_names
             
             if installed:
