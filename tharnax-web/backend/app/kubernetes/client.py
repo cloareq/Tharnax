@@ -12,17 +12,14 @@ def get_k8s_client():
     When running locally, it will use the kubeconfig file.
     """
     try:
-        # Print detailed environment for debugging
         logger.info(f"Python version: {sys.version}")
         logger.info(f"Running as user: {os.getuid()}:{os.getgid()}")
         logger.info(f"Working directory: {os.getcwd()}")
         
-        # Try to load in-cluster config (when running as a pod)
         logger.info("Attempting to load in-cluster Kubernetes configuration")
         config.load_incluster_config()
         logger.info("Successfully loaded in-cluster Kubernetes configuration")
         
-        # Test connection
         v1 = client.CoreV1Api()
         try:
             version = client.VersionApi().get_code()
@@ -31,7 +28,6 @@ def get_k8s_client():
             logger.warning(f"Could not get Kubernetes version: {e}")
             
     except config.ConfigException as e:
-        # Fallback to kubeconfig file (for local development)
         logger.info(f"Not running in cluster, falling back to kubeconfig: {e}")
         try:
             kubeconfig = os.environ.get("KUBECONFIG", os.path.expanduser("~/.kube/config"))
@@ -42,7 +38,6 @@ def get_k8s_client():
             config.load_kube_config(kubeconfig)
             logger.info("Successfully loaded kubeconfig")
             
-            # Test connection
             v1 = client.CoreV1Api()
             try:
                 version = client.VersionApi().get_code()

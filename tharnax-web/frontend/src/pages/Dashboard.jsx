@@ -6,6 +6,7 @@ import {
     CodeBracketIcon
 } from '@heroicons/react/24/outline';
 import StatusCard from '../components/StatusCard';
+import StorageCard from '../components/StorageCard';
 import { apiClient } from '../services/api';
 
 const Dashboard = () => {
@@ -13,7 +14,8 @@ const Dashboard = () => {
         status: 'loading',
         node_count: '-',
         k3s_version: '-',
-        pod_count: '-'
+        pod_count: '-',
+        nfs_storage: null
     });
 
     const [loading, setLoading] = useState(true);
@@ -28,27 +30,26 @@ const Dashboard = () => {
                 const response = await apiClient.get('/status');
                 console.log('API Response:', response);
 
-                setApiResponse(response.data); // Store full response for debugging
+                setApiResponse(response.data);
                 setClusterStats(response.data);
                 setError(null);
             } catch (err) {
                 console.error('Error fetching cluster status:', err);
                 setApiResponse(err?.response?.data || null);
 
-                // Extract more error details if available
                 const errorMsg = err?.response?.data?.message ||
                     err?.message ||
                     'Failed to fetch cluster status';
 
                 setError(`${errorMsg}. Make sure your backend is running and has proper access to the Kubernetes API.`);
 
-                // Set some mock data for development
                 if (process.env.NODE_ENV === 'development') {
                     setClusterStats({
                         status: 'error',
                         node_count: 'N/A',
                         k3s_version: 'N/A',
-                        pod_count: 'N/A'
+                        pod_count: 'N/A',
+                        nfs_storage: null
                     });
                 }
             } finally {
@@ -58,7 +59,6 @@ const Dashboard = () => {
 
         fetchClusterStatus();
 
-        // Poll for updates every 10 seconds
         const intervalId = setInterval(fetchClusterStatus, 10000);
 
         return () => clearInterval(intervalId);
@@ -76,7 +76,6 @@ const Dashboard = () => {
                     <p className="font-bold mb-2">Connection Error</p>
                     <p>{error}</p>
 
-                    {/* Debug information */}
                     {process.env.NODE_ENV === 'development' && apiResponse && (
                         <div className="mt-3 pt-3 border-t border-red-700">
                             <p className="font-bold mb-1">Debug Info:</p>
@@ -122,6 +121,13 @@ const Dashboard = () => {
                     }
                 />
             </div>
+
+            {clusterStats.nfs_storage && (
+                <div className="mt-8">
+                    <h2 className="text-xl font-semibold text-white mb-4">Storage</h2>
+                    <StorageCard nfsStorage={clusterStats.nfs_storage} />
+                </div>
+            )}
 
             <div className="mt-8 bg-tharnax-primary rounded-lg shadow-md p-6">
                 <h2 className="text-xl font-semibold mb-4">Cluster Information</h2>

@@ -8,67 +8,63 @@ const AppCatalog = () => {
     const [selectedCategory, setSelectedCategory] = useState('all');
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    const [filterOptions, setFilterOptions] = useState(['all', 'management', 'monitoring']);
+
+    const fetchApps = async () => {
+        try {
+            setLoading(true);
+            const appsData = await apiClient.get('/apps');
+
+            if (Array.isArray(appsData?.data?.apps)) {
+                setApps(appsData.data.apps);
+
+                const categories = appsData.data.apps
+                    .map(app => app.category || 'misc')
+                    .filter((category, index, array) => array.indexOf(category) === index);
+
+                setFilterOptions(['all', ...categories]);
+            } else {
+                setApps([]);
+                setFilterOptions(['all']);
+            }
+        } catch (error) {
+            console.error('Error fetching apps:', error);
+            setError('Failed to load applications catalog.');
+
+            if (process.env.NODE_ENV === 'development') {
+                const mockApps = [
+                    {
+                        id: 'portainer',
+                        name: 'Portainer',
+                        description: 'Container management UI',
+                        category: 'management',
+                        installed: false,
+                        url: null
+                    },
+                    {
+                        id: 'grafana',
+                        name: 'Grafana',
+                        description: 'Monitoring and observability platform',
+                        category: 'monitoring',
+                        installed: false,
+                        url: null
+                    }
+                ];
+                setApps(mockApps);
+                setFilterOptions(['all', 'management', 'monitoring']);
+            }
+        } finally {
+            setLoading(false);
+        }
+    };
 
     useEffect(() => {
-        const fetchApps = async () => {
-            try {
-                setLoading(true);
-                const response = await apiClient.get('/apps');
-
-                // Make sure data is an array
-                const appsData = Array.isArray(response.data) ? response.data : [];
-                setApps(appsData);
-
-                // Extract unique categories safely
-                const uniqueCategories = Array.isArray(appsData) && appsData.length > 0
-                    ? [...new Set(appsData.map(app => app.category))]
-                    : [];
-                setCategories(uniqueCategories);
-
-                setError(null);
-            } catch (err) {
-                console.error('Error fetching applications:', err);
-                setError('Failed to fetch available applications. Backend might be unavailable.');
-
-                // Set empty arrays as fallback
-                setApps([]);
-                setCategories([]);
-            } finally {
-                setLoading(false);
-            }
-        };
-
         fetchApps();
     }, []);
 
-    // Mock data for development
-    const mockApps = [
-        {
-            id: "prometheus",
-            name: "Prometheus",
-            description: "Monitoring and alerting toolkit",
-            category: "monitoring",
-            icon: "monitoring",
-            installed: false
-        },
-        {
-            id: "grafana",
-            name: "Grafana",
-            description: "Metrics visualization and dashboards",
-            category: "monitoring",
-            icon: "dashboard",
-            installed: false
-        }
-    ];
-
-    // Use mock data if no apps are available and we're in development
-    const displayApps = apps.length > 0 ? apps : (
-        process.env.NODE_ENV === 'development' ? mockApps : []
-    );
-
-    const filteredApps = selectedCategory === 'all'
-        ? displayApps
-        : displayApps.filter(app => app.category === selectedCategory);
+    const filteredApps = Array.isArray(apps) && apps.length > 0
+        ? apps.filter(app => selectedCategory === 'all' || app.category === selectedCategory)
+        : [];
 
     return (
         <div>
@@ -86,17 +82,7 @@ const AppCatalog = () => {
 
             {/* Category filters */}
             <div className="mb-6 flex flex-wrap gap-2">
-                <button
-                    onClick={() => setSelectedCategory('all')}
-                    className={`px-4 py-2 rounded-full text-sm font-medium ${selectedCategory === 'all'
-                        ? 'bg-tharnax-accent text-white'
-                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                        }`}
-                >
-                    All
-                </button>
-
-                {categories.map(category => (
+                {filterOptions.map(category => (
                     <button
                         key={category}
                         onClick={() => setSelectedCategory(category)}

@@ -7,7 +7,6 @@ import {
 } from '@heroicons/react/24/outline';
 import { apiClient } from '../services/api';
 
-// Simple external link icon component
 const ExternalLinkIcon = ({ className }) => (
     <svg
         className={className}
@@ -45,8 +44,6 @@ const AppCard = ({ app = {} }) => {
 
             await apiClient.post(`/install/${id}`);
 
-            // In a real app, we would poll for status until complete
-            // For now, simulate a successful installation after 3 seconds
             setTimeout(() => {
                 setStatus('installed');
                 setInstalling(false);

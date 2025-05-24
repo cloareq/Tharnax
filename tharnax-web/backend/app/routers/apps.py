@@ -112,7 +112,6 @@ async def get_available_apps(k8s_client: client.CoreV1Api = Depends(get_k8s_clie
                     # Not installed, remove URL
                     app_data.pop("url", None)
             else:
-                # For other apps, simple namespace check
                 app_data["installed"] = app["id"] in namespace_names
             
             apps_with_status.append(app_data)

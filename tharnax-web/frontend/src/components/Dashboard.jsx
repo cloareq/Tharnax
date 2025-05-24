@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { fetchClusterStatus } from '../services/api';
 import StatusCard from './StatusCard';
+import StorageCard from './StorageCard';
 
-// Import some icons (using inline SVGs for simplicity)
 const ServerIcon = (props) => (
     <svg
         {...props}
@@ -42,6 +42,7 @@ const Dashboard = () => {
         node_count: '-',
         k3s_version: '-',
         pod_count: '-',
+        nfs_storage: null,
         status: 'loading'
     });
     const [loading, setLoading] = useState(true);
@@ -64,7 +65,6 @@ const Dashboard = () => {
 
         fetchData();
 
-        // Poll for updates every 30 seconds
         const intervalId = setInterval(fetchData, 30000);
 
         return () => clearInterval(intervalId);
@@ -85,22 +85,31 @@ const Dashboard = () => {
                     <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
                 </div>
             ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-                    <StatusCard
-                        title="Nodes"
-                        value={clusterInfo.node_count}
-                        icon={ServerIcon}
-                    />
-                    <StatusCard
-                        title="K3s Version"
-                        value={clusterInfo.k3s_version}
-                        icon={TagIcon}
-                    />
-                    <StatusCard
-                        title="Pod Count"
-                        value={clusterInfo.pod_count}
-                        icon={ServerIcon}
-                    />
+                <div className="space-y-6">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                        <StatusCard
+                            title="Nodes"
+                            value={clusterInfo.node_count}
+                            icon={ServerIcon}
+                        />
+                        <StatusCard
+                            title="K3s Version"
+                            value={clusterInfo.k3s_version}
+                            icon={TagIcon}
+                        />
+                        <StatusCard
+                            title="Pod Count"
+                            value={clusterInfo.pod_count}
+                            icon={ServerIcon}
+                        />
+                    </div>
+
+                    {clusterInfo.nfs_storage && (
+                        <div>
+                            <h3 className="text-lg font-semibold text-white mb-3">Storage</h3>
+                            <StorageCard nfsStorage={clusterInfo.nfs_storage} />
+                        </div>
+                    )}
                 </div>
             )}
         </div>

@@ -27,7 +27,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers with the /api prefix
 app.include_router(status.router, prefix="/api")
 app.include_router(apps.router, prefix="/api")
 app.include_router(install.router, prefix="/api")
