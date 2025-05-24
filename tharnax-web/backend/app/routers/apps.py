@@ -74,21 +74,24 @@ async def check_monitoring_argocd_status(k8s_client: client.CoreV1Api) -> bool:
         sync = status.get("sync", {})
         
         # Application is considered installed if:
-        # 1. Health status is "Healthy"
-        # 2. Sync status is "Synced"
-        is_healthy = health.get("status") == "Healthy"
+        # 1. Health status is "Healthy" OR health checking is disabled (None/empty)
+        # 2. Sync status is "Synced" 
+        # 3. Actual pods are running
+        health_status = health.get("status")
+        is_healthy = health_status == "Healthy" or health_status is None or health_status == ""
         is_synced = sync.get("status") == "Synced"
         
-        logger.info(f"Monitoring stack status - Health: {health.get('status')}, Sync: {sync.get('status')}")
+        logger.info(f"Monitoring stack status - Health: {health_status} (treated as healthy: {is_healthy}), Sync: {sync.get('status')}")
         
-        if is_healthy and is_synced:
+        # Check if synced and either healthy OR health checking disabled
+        if is_synced and is_healthy:
             # Additional check: verify monitoring namespace has running pods
             try:
                 pods = k8s_client.list_namespaced_pod(namespace="monitoring")
                 running_pods = [pod for pod in pods.items if pod.status.phase == "Running"]
                 
-                # Require at least 2 main components running (prometheus + grafana)
-                if len(running_pods) >= 2:
+                # Require at least 3 main components running (prometheus + grafana + alertmanager)
+                if len(running_pods) >= 3:
                     logger.info(f"Monitoring stack is healthy with {len(running_pods)} running pods")
                     return True
                 else:
@@ -97,10 +100,10 @@ async def check_monitoring_argocd_status(k8s_client: client.CoreV1Api) -> bool:
                     
             except Exception as e:
                 logger.warning(f"Error checking monitoring pods: {e}")
-                # If we can't check pods but Argo says it's healthy, trust Argo
-                return True
+                # If we can't check pods but Argo says it's synced, trust the sync status
+                return is_synced
         else:
-            logger.info(f"Monitoring stack not ready - Health: {is_healthy}, Synced: {is_synced}")
+            logger.info(f"Monitoring stack not ready - Health acceptable: {is_healthy}, Synced: {is_synced}")
             return False
             
     except Exception as e:
