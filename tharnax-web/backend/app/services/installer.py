@@ -48,6 +48,9 @@ def create_monitoring_argocd_application(nfs_available: bool, nfs_path: Optional
     
     # Base Helm values
     helm_values = {
+        "crds": {
+            "enabled": False  # Disable CRD creation to avoid annotation issues
+        },
         "prometheus": {
             "prometheusSpec": {
                 "retention": "15d",
@@ -68,6 +71,16 @@ def create_monitoring_argocd_application(nfs_available: bool, nfs_path: Optional
             "alertmanagerSpec": {
                 "retention": "120h"
             }
+        },
+        "kubeStateMetrics": {
+            "enabled": True
+        },
+        "nodeExporter": {
+            "enabled": True
+        },
+        "prometheusOperator": {
+            "enabled": True,
+            "manageCrds": False  # Don't manage CRDs to avoid issues
         }
     }
     
@@ -136,7 +149,7 @@ def create_monitoring_argocd_application(nfs_available: bool, nfs_path: Optional
             "source": {
                 "repoURL": "https://prometheus-community.github.io/helm-charts",
                 "chart": "kube-prometheus-stack",
-                "targetRevision": "57.2.0",  # Use a specific stable version
+                "targetRevision": "58.7.2",  # Use a more recent stable version
                 "helm": {
                     "values": yaml.dump(helm_values)
                 }
@@ -151,7 +164,9 @@ def create_monitoring_argocd_application(nfs_available: bool, nfs_path: Optional
                     "selfHeal": True
                 },
                 "syncOptions": [
-                    "CreateNamespace=true"
+                    "CreateNamespace=true",
+                    "ServerSideApply=true",
+                    "SkipDryRunOnMissingResource=true"
                 ]
             }
         }
@@ -170,10 +185,14 @@ async def install_monitoring_stack(k8s_client: client.CoreV1Api):
         nfs_available, nfs_path = detect_nfs_storage()
         logger.info(f"NFS storage detection: available={nfs_available}, path={nfs_path}")
         
-        # Create the Application manifest
+        # Step 1: Install CRDs first to avoid annotation size issues
+        logger.info("Installing Prometheus Operator CRDs...")
+        await install_prometheus_crds(k8s_client)
+        
+        # Step 2: Create the Application manifest
         app_manifest = create_monitoring_argocd_application(nfs_available, nfs_path)
         
-        # Create custom objects API client for Argo CD Applications
+        # Step 3: Create custom objects API client for Argo CD Applications
         custom_api = client.CustomObjectsApi()
         
         try:
@@ -219,9 +238,37 @@ async def install_monitoring_stack(k8s_client: client.CoreV1Api):
                     pods = k8s_client.list_namespaced_pod(namespace="monitoring")
                     running_pods = [pod for pod in pods.items if pod.status.phase == "Running"]
                     
-                    if len(running_pods) > 0:
-                        logger.info(f"Monitoring stack deployed successfully! {len(running_pods)} pods running")
-                        return True
+                    # We need at least 3 main components running: prometheus, grafana, alertmanager
+                    if len(running_pods) >= 3:
+                        logger.info(f"Found {len(running_pods)} running pods, checking services...")
+                        
+                        # Check if essential services are ready
+                        services = k8s_client.list_namespaced_service(namespace="monitoring")
+                        grafana_ready = False
+                        prometheus_ready = False
+                        
+                        for svc in services.items:
+                            # Check Grafana service
+                            if "grafana" in svc.metadata.name.lower():
+                                if svc.spec.type == "LoadBalancer":
+                                    if svc.status.load_balancer.ingress:
+                                        grafana_ready = True
+                                        logger.info("Grafana LoadBalancer is ready")
+                                    else:
+                                        logger.info("Grafana LoadBalancer still pending...")
+                                else:
+                                    grafana_ready = True  # ClusterIP is immediately ready
+                            
+                            # Check Prometheus service  
+                            if "prometheus" in svc.metadata.name.lower() and "operated" not in svc.metadata.name.lower():
+                                prometheus_ready = True
+                                logger.info("Prometheus service is ready")
+                        
+                        if grafana_ready and prometheus_ready:
+                            logger.info("Monitoring stack deployed successfully! All services are ready.")
+                            return True
+                        else:
+                            logger.info(f"Services status - Grafana ready: {grafana_ready}, Prometheus ready: {prometheus_ready}")
                 
                 time.sleep(wait_interval)
                 elapsed_time += wait_interval
@@ -237,6 +284,128 @@ async def install_monitoring_stack(k8s_client: client.CoreV1Api):
     except Exception as e:
         logger.error(f"Error installing monitoring stack: {e}")
         raise
+
+async def install_prometheus_crds(k8s_client: client.CoreV1Api):
+    """
+    Install Prometheus Operator CRDs directly to avoid annotation size issues
+    """
+    logger.info("Installing Prometheus Operator CRDs...")
+    
+    # Define the CRDs we need with minimal annotations
+    crds = [
+        {
+            "apiVersion": "apiextensions.k8s.io/v1",
+            "kind": "CustomResourceDefinition",
+            "metadata": {
+                "name": "alertmanagers.monitoring.coreos.com"
+            },
+            "spec": {
+                "group": "monitoring.coreos.com",
+                "versions": [
+                    {
+                        "name": "v1",
+                        "served": True,
+                        "storage": True,
+                        "schema": {
+                            "openAPIV3Schema": {
+                                "type": "object",
+                                "properties": {
+                                    "spec": {"type": "object", "x-kubernetes-preserve-unknown-fields": True},
+                                    "status": {"type": "object", "x-kubernetes-preserve-unknown-fields": True}
+                                }
+                            }
+                        }
+                    }
+                ],
+                "scope": "Namespaced",
+                "names": {
+                    "plural": "alertmanagers",
+                    "singular": "alertmanager",
+                    "kind": "Alertmanager"
+                }
+            }
+        },
+        {
+            "apiVersion": "apiextensions.k8s.io/v1",
+            "kind": "CustomResourceDefinition",
+            "metadata": {
+                "name": "prometheuses.monitoring.coreos.com"
+            },
+            "spec": {
+                "group": "monitoring.coreos.com",
+                "versions": [
+                    {
+                        "name": "v1",
+                        "served": True,
+                        "storage": True,
+                        "schema": {
+                            "openAPIV3Schema": {
+                                "type": "object",
+                                "properties": {
+                                    "spec": {"type": "object", "x-kubernetes-preserve-unknown-fields": True},
+                                    "status": {"type": "object", "x-kubernetes-preserve-unknown-fields": True}
+                                }
+                            }
+                        }
+                    }
+                ],
+                "scope": "Namespaced",
+                "names": {
+                    "plural": "prometheuses",
+                    "singular": "prometheus",
+                    "kind": "Prometheus"
+                }
+            }
+        },
+        {
+            "apiVersion": "apiextensions.k8s.io/v1",
+            "kind": "CustomResourceDefinition",
+            "metadata": {
+                "name": "prometheusagents.monitoring.coreos.com"
+            },
+            "spec": {
+                "group": "monitoring.coreos.com",
+                "versions": [
+                    {
+                        "name": "v1alpha1",
+                        "served": True,
+                        "storage": True,
+                        "schema": {
+                            "openAPIV3Schema": {
+                                "type": "object",
+                                "properties": {
+                                    "spec": {"type": "object", "x-kubernetes-preserve-unknown-fields": True},
+                                    "status": {"type": "object", "x-kubernetes-preserve-unknown-fields": True}
+                                }
+                            }
+                        }
+                    }
+                ],
+                "scope": "Namespaced",
+                "names": {
+                    "plural": "prometheusagents",
+                    "singular": "prometheusagent",
+                    "kind": "PrometheusAgent"
+                }
+            }
+        }
+    ]
+    
+    # Install each CRD
+    api_extensions = client.ApiextensionsV1Api()
+    
+    for crd in crds:
+        try:
+            api_extensions.create_custom_resource_definition(body=crd)
+            logger.info(f"Created CRD: {crd['metadata']['name']}")
+        except ApiException as e:
+            if e.status == 409:
+                logger.info(f"CRD already exists: {crd['metadata']['name']}")
+            else:
+                logger.warning(f"Error creating CRD {crd['metadata']['name']}: {e}")
+                # Continue with other CRDs even if one fails
+    
+    logger.info("Prometheus Operator CRDs installation completed")
 
 async def install_component(component: str, config: Optional[Dict[str, Any]], k8s_client: client.CoreV1Api):
     """

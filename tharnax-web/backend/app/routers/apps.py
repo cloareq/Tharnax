@@ -109,43 +109,71 @@ async def get_available_apps(k8s_client: client.CoreV1Api = Depends(get_k8s_clie
                 app_data["installed"] = monitoring_installed
                 
                 if monitoring_installed:
-                    # Try to get the Grafana service URL
+                    # Try to get both Grafana and Prometheus service URLs
                     try:
                         services = k8s_client.list_namespaced_service(namespace="monitoring")
-                        grafana_service = None
+                        grafana_url = None
+                        prometheus_url = None
+                        
+                        # Get master node IP for fallback
+                        master_ip = "localhost"
+                        try:
+                            nodes = k8s_client.list_node()
+                            if nodes.items:
+                                for address in nodes.items[0].status.addresses:
+                                    if address.type == "InternalIP":
+                                        master_ip = address.address
+                                        break
+                        except:
+                            pass
                         
                         for svc in services.items:
+                            # Check Grafana service
                             if "grafana" in svc.metadata.name.lower():
-                                grafana_service = svc
-                                break
-                        
-                        if grafana_service:
-                            # Check if it's a LoadBalancer service
-                            if grafana_service.spec.type == "LoadBalancer":
-                                if grafana_service.status.load_balancer.ingress:
-                                    lb_ip = grafana_service.status.load_balancer.ingress[0].ip
-                                    app_data["url"] = f"http://{lb_ip}"
+                                if svc.spec.type == "LoadBalancer":
+                                    if svc.status.load_balancer.ingress:
+                                        lb_ip = svc.status.load_balancer.ingress[0].ip
+                                        grafana_url = f"http://{lb_ip}"
+                                    else:
+                                        # LoadBalancer pending, use node IP fallback
+                                        grafana_url = f"http://{master_ip}:3000"
                                 else:
-                                    # LoadBalancer pending, use node IP fallback
-                                    # Try to get master node IP
-                                    nodes = k8s_client.list_node()
-                                    if nodes.items:
-                                        for address in nodes.items[0].status.addresses:
-                                            if address.type == "InternalIP":
-                                                # Grafana typically runs on port 3000
-                                                app_data["url"] = f"http://{address.address}:3000"
-                                                break
-                            else:
-                                # Not a LoadBalancer, use generic localhost
-                                app_data["url"] = "http://localhost:3000"
-                        else:
-                            app_data["url"] = "http://localhost:3000"
+                                    # ClusterIP service
+                                    grafana_url = f"http://{master_ip}:3000"
+                            
+                            # Check Prometheus service
+                            if "prometheus" in svc.metadata.name.lower() and "operated" not in svc.metadata.name.lower():
+                                if svc.spec.type == "LoadBalancer":
+                                    if svc.status.load_balancer.ingress:
+                                        lb_ip = svc.status.load_balancer.ingress[0].ip
+                                        prometheus_url = f"http://{lb_ip}:9090"
+                                    else:
+                                        # LoadBalancer pending, use node IP fallback  
+                                        prometheus_url = f"http://{master_ip}:9090"
+                                else:
+                                    # ClusterIP service
+                                    prometheus_url = f"http://{master_ip}:9090"
+                        
+                        # Set URLs for the monitoring stack
+                        app_data["urls"] = {
+                            "grafana": grafana_url or f"http://{master_ip}:3000",
+                            "prometheus": prometheus_url or f"http://{master_ip}:9090"
+                        }
+                        
+                        # Keep the legacy single URL for backward compatibility (defaults to Grafana)
+                        app_data["url"] = grafana_url or f"http://{master_ip}:3000"
+                        
                     except Exception as e:
-                        logger.warning(f"Could not determine Grafana URL: {str(e)}")
+                        logger.warning(f"Could not determine monitoring URLs: {str(e)}")
+                        app_data["urls"] = {
+                            "grafana": f"http://localhost:3000",
+                            "prometheus": f"http://localhost:9090"
+                        }
                         app_data["url"] = "http://localhost:3000"
                 else:
-                    # Not installed, remove URL
+                    # Not installed, remove URLs
                     app_data.pop("url", None)
+                    app_data.pop("urls", None)
             else:
                 app_data["installed"] = app["id"] in namespace_names
             

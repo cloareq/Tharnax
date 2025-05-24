@@ -31,7 +31,8 @@ const AppCard = ({ app = {} }) => {
         description = 'No description available',
         category = 'misc',
         installed = false,
-        url = null
+        url = null,
+        urls = null
     } = app;
 
     const [installing, setInstalling] = useState(false);
@@ -44,10 +45,46 @@ const AppCard = ({ app = {} }) => {
 
             await apiClient.post(`/install/${id}`);
 
-            setTimeout(() => {
-                setStatus('installed');
-                setInstalling(false);
-            }, 3000);
+            // Poll for installation status instead of fixed timeout
+            const pollInterval = 5000; // 5 seconds
+            const maxAttempts = 120; // 10 minutes total
+            let attempts = 0;
+
+            const pollStatus = async () => {
+                try {
+                    const response = await apiClient.get('/apps');
+                    const updatedApp = response.data.find(a => a.id === id);
+
+                    if (updatedApp && updatedApp.installed) {
+                        setStatus('installed');
+                        setInstalling(false);
+                        window.location.reload(); // Refresh to get updated URLs
+                        return;
+                    }
+
+                    attempts++;
+                    if (attempts < maxAttempts) {
+                        setTimeout(pollStatus, pollInterval);
+                    } else {
+                        // Timeout - still installing but too long
+                        setStatus('error');
+                        setInstalling(false);
+                    }
+                } catch (error) {
+                    console.error('Error polling status:', error);
+                    attempts++;
+                    if (attempts < maxAttempts) {
+                        setTimeout(pollStatus, pollInterval);
+                    } else {
+                        setStatus('error');
+                        setInstalling(false);
+                    }
+                }
+            };
+
+            // Start polling after a short delay
+            setTimeout(pollStatus, pollInterval);
+
         } catch (error) {
             setStatus('error');
             setInstalling(false);
@@ -55,10 +92,8 @@ const AppCard = ({ app = {} }) => {
         }
     };
 
-    const handleAppClick = () => {
-        if (url && (status === 'installed' || installed)) {
-            window.open(url, '_blank', 'noopener,noreferrer');
-        }
+    const handleUrlClick = (targetUrl) => {
+        window.open(targetUrl, '_blank', 'noopener,noreferrer');
     };
 
     const getStatusIcon = () => {
@@ -76,28 +111,53 @@ const AppCard = ({ app = {} }) => {
         }
     };
 
-    const isClickable = url && (status === 'installed' || installed);
+    const hasUrls = urls && Object.keys(urls).length > 0;
+    const hasUrl = url && !hasUrls;
+    const isInstalled = status === 'installed' || installed;
 
     return (
         <div className="bg-tharnax-primary rounded-lg shadow-md p-5">
             <div className="flex justify-between items-start">
-                <div
-                    className={`flex-1 ${isClickable ? 'cursor-pointer' : ''}`}
-                    onClick={isClickable ? handleAppClick : undefined}
-                >
+                <div className="flex-1">
                     <div className="flex items-center">
-                        <h3 className={`text-lg font-medium text-tharnax-text ${isClickable ? 'hover:text-blue-400' : ''}`}>
+                        <h3 className="text-lg font-medium text-tharnax-text">
                             {name}
                         </h3>
                         <div className="ml-2">{getStatusIcon()}</div>
-                        {isClickable && (
-                            <ExternalLinkIcon className="ml-2 h-4 w-4 text-gray-400" />
-                        )}
                     </div>
                     <p className="mt-1 text-sm text-gray-400">{description}</p>
                     <div className="mt-2 inline-block px-2 py-1 text-xs font-medium rounded-full bg-gray-700">
                         {category}
                     </div>
+
+                    {/* Multiple URL buttons for monitoring stack */}
+                    {isInstalled && hasUrls && (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                            {Object.entries(urls).map(([serviceName, serviceUrl]) => (
+                                <button
+                                    key={serviceName}
+                                    onClick={() => handleUrlClick(serviceUrl)}
+                                    className="flex items-center px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+                                >
+                                    <span className="capitalize">{serviceName}</span>
+                                    <ExternalLinkIcon className="ml-1 h-3 w-3" />
+                                </button>
+                            ))}
+                        </div>
+                    )}
+
+                    {/* Single URL button for other apps */}
+                    {isInstalled && hasUrl && (
+                        <div className="mt-3">
+                            <button
+                                onClick={() => handleUrlClick(url)}
+                                className="flex items-center px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+                            >
+                                Open
+                                <ExternalLinkIcon className="ml-1 h-3 w-3" />
+                            </button>
+                        </div>
+                    )}
                 </div>
 
                 <button
