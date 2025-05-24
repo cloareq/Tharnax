@@ -62,20 +62,24 @@ def create_monitoring_argocd_application(nfs_available: bool, nfs_path: Optional
                 "walCompression": True,
                 "portName": "web",
                 "listenLocal": False,
-                "enableRemoteWriteReceiver": False
+                "enableRemoteWriteReceiver": False,
+                "disableCompaction": False,
+                "enableFeatures": []
             },
             "service": {
                 "type": "LoadBalancer",
                 "port": 9090,
                 "targetPort": 9090,
-                "ports": [
-                    {
-                        "name": "web",
-                        "port": 9090,
-                        "targetPort": 9090,
-                        "protocol": "TCP"
-                    }
-                ]
+                "additionalPorts": []
+            },
+            "servicePerReplica": {
+                "enabled": False
+            },
+            "podDisruptionBudget": {
+                "enabled": False
+            },
+            "serviceMonitor": {
+                "enabled": True
             }
         },
         "grafana": {
@@ -118,6 +122,12 @@ def create_monitoring_argocd_application(nfs_available: bool, nfs_path: Optional
                         "memory": "50Mi"
                     }
                 }
+            },
+            "admissionWebhooks": {
+                "enabled": False
+            },
+            "tls": {
+                "enabled": False
             }
         },
         "global": {
