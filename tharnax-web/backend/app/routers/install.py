@@ -13,7 +13,7 @@ router = APIRouter(
 )
 
 # List of valid components that can be installed
-VALID_COMPONENTS = ["nfs-server", "jellyfin", "sonarr", "prometheus", "grafana"]
+VALID_COMPONENTS = ["nfs-server", "jellyfin", "sonarr", "prometheus", "grafana", "monitoring"]
 
 @router.post("/{component}")
 async def install_app(

@@ -22,6 +22,13 @@ AVAILABLE_APPS = [
         "url": "http://localhost:8080"  # This will be dynamically set based on cluster configuration
     },
     {
+        "id": "monitoring",
+        "name": "Monitoring Stack",
+        "description": "Prometheus and Grafana monitoring stack",
+        "category": "monitoring",
+        "icon": "monitoring"
+    },
+    {
         "id": "jellyfin",
         "name": "Jellyfin",
         "description": "Free Software Media System",
@@ -34,20 +41,6 @@ AVAILABLE_APPS = [
         "description": "TV series management",
         "category": "media",
         "icon": "tv"
-    },
-    {
-        "id": "prometheus",
-        "name": "Prometheus",
-        "description": "Monitoring and alerting toolkit",
-        "category": "monitoring",
-        "icon": "monitoring"
-    },
-    {
-        "id": "grafana",
-        "name": "Grafana",
-        "description": "Metrics visualization and dashboards",
-        "category": "monitoring",
-        "icon": "dashboard"
     }
 ]
 
@@ -108,6 +101,48 @@ async def get_available_apps(k8s_client: client.CoreV1Api = Depends(get_k8s_clie
                     except Exception as e:
                         logger.warning(f"Could not determine ArgoCD URL: {str(e)}")
                         app_data["url"] = "http://localhost:8080"
+                else:
+                    # Not installed, remove URL
+                    app_data.pop("url", None)
+            elif app["id"] == "monitoring":
+                monitoring_installed = "monitoring" in namespace_names
+                app_data["installed"] = monitoring_installed
+                
+                if monitoring_installed:
+                    # Try to get the Grafana service URL
+                    try:
+                        services = k8s_client.list_namespaced_service(namespace="monitoring")
+                        grafana_service = None
+                        
+                        for svc in services.items:
+                            if "grafana" in svc.metadata.name.lower():
+                                grafana_service = svc
+                                break
+                        
+                        if grafana_service:
+                            # Check if it's a LoadBalancer service
+                            if grafana_service.spec.type == "LoadBalancer":
+                                if grafana_service.status.load_balancer.ingress:
+                                    lb_ip = grafana_service.status.load_balancer.ingress[0].ip
+                                    app_data["url"] = f"http://{lb_ip}"
+                                else:
+                                    # LoadBalancer pending, use node IP fallback
+                                    # Try to get master node IP
+                                    nodes = k8s_client.list_node()
+                                    if nodes.items:
+                                        for address in nodes.items[0].status.addresses:
+                                            if address.type == "InternalIP":
+                                                # Grafana typically runs on port 3000
+                                                app_data["url"] = f"http://{address.address}:3000"
+                                                break
+                            else:
+                                # Not a LoadBalancer, use generic localhost
+                                app_data["url"] = "http://localhost:3000"
+                        else:
+                            app_data["url"] = "http://localhost:3000"
+                    except Exception as e:
+                        logger.warning(f"Could not determine Grafana URL: {str(e)}")
+                        app_data["url"] = "http://localhost:3000"
                 else:
                     # Not installed, remove URL
                     app_data.pop("url", None)
