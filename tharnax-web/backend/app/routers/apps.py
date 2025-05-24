@@ -133,7 +133,7 @@ async def get_available_apps(k8s_client: client.CoreV1Api = Depends(get_k8s_clie
                                 if svc.spec.type == "LoadBalancer":
                                     if svc.status.load_balancer.ingress:
                                         lb_ip = svc.status.load_balancer.ingress[0].ip
-                                        grafana_url = f"http://{lb_ip}"
+                                        grafana_url = f"http://{lb_ip}:3000"
                                     else:
                                         # LoadBalancer pending, use node IP fallback
                                         grafana_url = f"http://{master_ip}:3000"

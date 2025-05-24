@@ -60,12 +60,19 @@ def create_monitoring_argocd_application(nfs_available: bool, nfs_path: Optional
                 "evaluationInterval": "30s",
                 "enableAdminAPI": True,
                 "walCompression": True
+            },
+            "service": {
+                "type": "LoadBalancer",
+                "port": 9090,
+                "targetPort": 9090
             }
         },
         "grafana": {
             "adminPassword": "admin",
             "service": {
-                "type": "LoadBalancer"
+                "type": "LoadBalancer",
+                "port": 3000,
+                "targetPort": 3000
             },
             "persistence": {
                 "enabled": True,
