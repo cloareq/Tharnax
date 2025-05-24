@@ -697,6 +697,44 @@ deploy_web_ui() {
     fi
 }
 
+install_helm() {
+    echo ""
+    echo -e "${BLUE}Installing Helm...${NC}"
+    echo -e "${YELLOW}Helm is required for managing Kubernetes applications.${NC}"
+    
+    # Check if Helm is already installed
+    if command -v helm >/dev/null 2>&1; then
+        echo -e "${GREEN}Helm is already installed.${NC}"
+        helm version --short
+        return 0
+    fi
+    
+    # Download and install Helm
+    echo -e "${BLUE}Downloading and installing Helm...${NC}"
+    curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+    chmod 700 get_helm.sh
+    ./get_helm.sh
+    
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Failed to install Helm.${NC}"
+        rm -f get_helm.sh
+        return 1
+    fi
+    
+    # Clean up
+    rm -f get_helm.sh
+    
+    # Verify installation
+    if command -v helm >/dev/null 2>&1; then
+        echo -e "${GREEN}Helm installed successfully.${NC}"
+        helm version --short
+        return 0
+    else
+        echo -e "${RED}Helm installation verification failed.${NC}"
+        return 1
+    fi
+}
+
 deploy_argocd() {
     echo ""
     echo -e "${BLUE}Deploying Argo CD...${NC}"
@@ -1373,7 +1411,8 @@ if [ "$COMPONENT_K3S" = true ]; then
         deploy_web_ui
         
         # Automatically deploy Argo CD after Web UI
-        echo -e "${BLUE}Deploying Argo CD...${NC}"
+        echo -e "${BLUE}Installing Helm and deploying Argo CD...${NC}"
+        install_helm
         deploy_argocd
     else
         echo -e "${YELLOW}Web UI deployment skipped.${NC}"
@@ -1388,7 +1427,8 @@ else
     fi
     # In component-only mode, just install Argo CD if requested
     if [ "$COMPONENT_ARGOCD" = true ]; then
-        echo -e "${BLUE}Installing Argo CD component...${NC}"
+        echo -e "${BLUE}Installing Helm and Argo CD component...${NC}"
+        install_helm
         deploy_argocd
     fi
 fi

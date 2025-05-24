@@ -44,70 +44,55 @@ AVAILABLE_APPS = [
     }
 ]
 
-async def check_monitoring_argocd_status(k8s_client: client.CoreV1Api) -> bool:
+async def check_monitoring_status(k8s_client: client.CoreV1Api) -> bool:
     """
-    Check if the monitoring stack is properly deployed via Argo CD Application
+    Check if the monitoring stack is properly deployed (direct Helm installation)
     """
     try:
-        custom_api = client.CustomObjectsApi()
-        
-        # Check if the Argo CD Application exists
+        # Check if monitoring namespace exists and has running pods
         try:
-            app = custom_api.get_namespaced_custom_object(
-                group="argoproj.io",
-                version="v1alpha1",
-                namespace="argocd",
-                plural="applications",
-                name="monitoring-stack"
-            )
+            pods = k8s_client.list_namespaced_pod(namespace="monitoring")
+            if not pods.items:
+                logger.info("No pods found in monitoring namespace")
+                return False
+                
+            running_pods = [pod for pod in pods.items if pod.status.phase == "Running"]
+            total_pods = len(pods.items)
+            
+            logger.info(f"Monitoring stack status - {len(running_pods)}/{total_pods} pods running")
+            
+            # Require at least 3 main components running (prometheus + grafana + alertmanager)
+            if len(running_pods) >= 3:
+                # Also check that essential services exist
+                try:
+                    services = k8s_client.list_namespaced_service(namespace="monitoring")
+                    has_grafana = any("grafana" in svc.metadata.name.lower() for svc in services.items)
+                    has_prometheus = any("prometheus" in svc.metadata.name.lower() for svc in services.items)
+                    
+                    if has_grafana and has_prometheus:
+                        logger.info(f"Monitoring stack is healthy with {len(running_pods)} running pods")
+                        return True
+                    else:
+                        logger.info(f"Missing essential services - Grafana: {has_grafana}, Prometheus: {has_prometheus}")
+                        return False
+                except Exception as e:
+                    logger.warning(f"Error checking monitoring services: {e}")
+                    # If we can't check services but have pods running, assume it's working
+                    return len(running_pods) >= 3
+            else:
+                logger.info(f"Monitoring stack not ready - only {len(running_pods)}/{total_pods} pods running")
+                return False
+                
         except client.exceptions.ApiException as e:
             if e.status == 404:
-                logger.info("Monitoring Argo CD Application not found")
+                logger.info("Monitoring namespace not found")
                 return False
             else:
-                logger.warning(f"Error checking Argo CD Application: {e}")
+                logger.warning(f"Error checking monitoring namespace: {e}")
                 return False
-        
-        # Check the Application status
-        status = app.get("status", {})
-        health = status.get("health", {})
-        sync = status.get("sync", {})
-        
-        # Application is considered installed if:
-        # 1. Health status is "Healthy" OR health checking is disabled (None/empty)
-        # 2. Sync status is "Synced" 
-        # 3. Actual pods are running
-        health_status = health.get("status")
-        is_healthy = health_status in ["Healthy", None, ""]
-        is_synced = sync.get("status") == "Synced"
-        
-        logger.info(f"Monitoring stack status - Health: {health_status} (treated as healthy: {is_healthy}), Sync: {sync.get('status')}")
-        
-        # Check if synced and either healthy OR health checking disabled
-        if is_synced and is_healthy:
-            # Additional check: verify monitoring namespace has running pods
-            try:
-                pods = k8s_client.list_namespaced_pod(namespace="monitoring")
-                running_pods = [pod for pod in pods.items if pod.status.phase == "Running"]
-                
-                # Require at least 3 main components running (prometheus + grafana + alertmanager)
-                if len(running_pods) >= 3:
-                    logger.info(f"Monitoring stack is healthy with {len(running_pods)} running pods")
-                    return True
-                else:
-                    logger.info(f"Monitoring stack synced but only {len(running_pods)} pods running")
-                    return False
-                    
-            except Exception as e:
-                logger.warning(f"Error checking monitoring pods: {e}")
-                # If we can't check pods but Argo says it's synced, trust the sync status
-                return is_synced
-        else:
-            logger.info(f"Monitoring stack not ready - Health acceptable: {is_healthy}, Synced: {is_synced}")
-            return False
             
     except Exception as e:
-        logger.error(f"Error checking monitoring Argo CD status: {e}")
+        logger.error(f"Error checking monitoring status: {e}")
         return False
 
 @router.get("/")
@@ -171,8 +156,8 @@ async def get_available_apps(k8s_client: client.CoreV1Api = Depends(get_k8s_clie
                     # Not installed, remove URL
                     app_data.pop("url", None)
             elif app["id"] == "monitoring":
-                # Check Argo CD Application status for monitoring
-                monitoring_installed = await check_monitoring_argocd_status(k8s_client)
+                # Check direct Helm installation status for monitoring
+                monitoring_installed = await check_monitoring_status(k8s_client)
                 app_data["installed"] = monitoring_installed
                 
                 if monitoring_installed:

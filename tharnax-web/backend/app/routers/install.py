@@ -1,7 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from app.kubernetes.client import get_k8s_client
 from app.services.installer import install_component
-from app.routers.apps import check_monitoring_argocd_status
 from kubernetes import client
 from typing import Dict, Any
 import logging
@@ -57,31 +56,23 @@ async def install_app(
     }
     
     # Start installation in background
-    try:
-        background_tasks.add_task(install_component_with_status, component, config, k8s_client)
-        
-        return {
-            "status": "started",
-            "message": f"Installation of {component} has started",
-            "component": component
-        }
-    except Exception as e:
-        logger.error(f"Failed to start installation of {component}: {str(e)}")
-        installation_status[component] = {
-            "status": "error",
-            "progress": 0,
-            "message": f"Failed to start installation: {str(e)}",
-            "component": component
-        }
-        return {
-            "status": "error",
-            "message": f"Failed to start installation: {str(e)}",
-            "component": component
-        }
+    background_tasks.add_task(
+        install_component_with_status,
+        component,
+        config or {},
+        k8s_client
+    )
+    
+    return {
+        "status": "started",
+        "message": f"Installation of {component} started",
+        "component": component,
+        "progress": 0
+    }
 
 async def install_component_with_status(component: str, config: Dict[str, Any], k8s_client: client.CoreV1Api):
     """
-    Wrapper function to track installation status with ArgoCD integration
+    Wrapper function to track installation status for direct Helm installation
     """
     try:
         # Update status to installing
@@ -90,28 +81,9 @@ async def install_component_with_status(component: str, config: Dict[str, Any], 
         installation_status[component]["message"] = f"Starting installation of {component}"
         
         if component == "monitoring":
-            # Special handling for monitoring with ArgoCD tracking
+            # Simple monitoring installation with Helm
             installation_status[component]["progress"] = 10
-            installation_status[component]["message"] = "Creating ArgoCD Application..."
-            
-            # Perform the actual installation
-            result = await install_component(component, config, k8s_client)
-            
-            if result:
-                # Don't immediately mark as completed - let ArgoCD tracking handle this
-                installation_status[component]["progress"] = 20
-                installation_status[component]["message"] = "ArgoCD Application created, deployment starting..."
-                
-                # The actual completion will be tracked by the status endpoint checking ArgoCD
-                logger.info(f"Monitoring installation initiated successfully, ArgoCD will handle deployment")
-            else:
-                installation_status[component]["status"] = "error"
-                installation_status[component]["progress"] = 0
-                installation_status[component]["message"] = f"Failed to create ArgoCD Application for {component}"
-        else:
-            # Legacy installation for other components
-            installation_status[component]["progress"] = 10
-            installation_status[component]["message"] = f"Installing {component}..."
+            installation_status[component]["message"] = "Installing monitoring stack with Helm..."
             
             # Perform the actual installation
             result = await install_component(component, config, k8s_client)
@@ -119,15 +91,27 @@ async def install_component_with_status(component: str, config: Dict[str, Any], 
             if result:
                 installation_status[component]["status"] = "completed"
                 installation_status[component]["progress"] = 100
-                installation_status[component]["message"] = f"Installation of {component} completed successfully"
-                installation_status[component]["completed_at"] = datetime.now().isoformat()
+                installation_status[component]["message"] = "Monitoring stack installed successfully!"
+                logger.info(f"Monitoring installation completed successfully")
             else:
                 installation_status[component]["status"] = "error"
                 installation_status[component]["progress"] = 0
-                installation_status[component]["message"] = f"Installation of {component} failed"
+                installation_status[component]["message"] = f"Failed to install {component}"
+        else:
+            # For other components, perform the installation
+            result = await install_component(component, config, k8s_client)
+            
+            if result:
+                installation_status[component]["status"] = "completed"
+                installation_status[component]["progress"] = 100
+                installation_status[component]["message"] = f"{component} installed successfully!"
+            else:
+                installation_status[component]["status"] = "error"
+                installation_status[component]["progress"] = 0
+                installation_status[component]["message"] = f"Failed to install {component}"
     
     except Exception as e:
-        logger.error(f"Error during installation of {component}: {str(e)}")
+        logger.error(f"Error installing {component}: {str(e)}")
         installation_status[component]["status"] = "error"
         installation_status[component]["progress"] = 0
         installation_status[component]["message"] = f"Installation failed: {str(e)}"
@@ -138,7 +122,7 @@ async def get_install_status(
     k8s_client: client.CoreV1Api = Depends(get_k8s_client)
 ):
     """
-    Get installation status for a specific component with ArgoCD integration
+    Get installation status for a specific component (simplified without ArgoCD)
     """
     # Check if component is valid
     if component not in VALID_COMPONENTS:
@@ -148,38 +132,32 @@ async def get_install_status(
     logger.info(f"Checking installation status for '{component}'")
     
     try:
-        # Special handling for monitoring component with ArgoCD integration
+        # Special handling for monitoring component
         if component == "monitoring":
             # Check if we have an existing installation status
             if component in installation_status:
                 status_info = installation_status[component]
                 
-                # First check actual pod status - this is more reliable than ArgoCD health
-                try:
-                    pods = k8s_client.list_namespaced_pod(namespace="monitoring")
-                    if pods.items:
-                        running_pods = [pod for pod in pods.items if pod.status.phase == "Running" and 
-                                      all(container.ready for container in pod.status.container_statuses or [])]
-                        total_pods = len(pods.items)
-                        
-                        if len(running_pods) >= 3:  # Main components: prometheus, grafana, alertmanager
-                            # Check if we have the essential services
-                            services = k8s_client.list_namespaced_service(namespace="monitoring")
-                            has_grafana = any("grafana" in svc.metadata.name for svc in services.items)
-                            has_prometheus = any("prometheus" in svc.metadata.name and "operated" not in svc.metadata.name 
-                                               for svc in services.items)
+                # If status shows completed, verify pods are actually running
+                if status_info["status"] == "completed":
+                    try:
+                        pods = k8s_client.list_namespaced_pod(namespace="monitoring")
+                        if pods.items:
+                            running_pods = [pod for pod in pods.items if pod.status.phase == "Running" and 
+                                          all(container.ready for container in (pod.status.container_statuses or []))]
+                            total_pods = len(pods.items)
                             
-                            if has_grafana and has_prometheus and len(running_pods) >= 7:  # All pods running
+                            if len(running_pods) >= 3:  # Main components: prometheus, grafana, alertmanager
                                 return {
                                     "status": "completed",
                                     "progress": 100,
                                     "message": f"Monitoring stack deployed successfully! {len(running_pods)} pods running.",
-                                    "argocd_health": "Healthy (forced)",
                                     "pods_running": len(running_pods),
                                     "total_pods": total_pods
                                 }
-                            elif len(running_pods) >= 3:
-                                progress = min(50 + (len(running_pods) * 6), 95)  # 50-95% based on pods
+                            else:
+                                # Pods not ready yet, show progress
+                                progress = min(50 + (len(running_pods) * 6), 95)
                                 return {
                                     "status": "installing",
                                     "progress": progress,
@@ -188,30 +166,47 @@ async def get_install_status(
                                     "total_pods": total_pods
                                 }
                         else:
-                            progress = max(20, len(running_pods) * 10)
-                            return {
-                                "status": "installing", 
-                                "progress": progress,
-                                "message": f"Monitoring stack deploying... {len(running_pods)}/{total_pods} pods ready",
-                                "pods_running": len(running_pods),
-                                "total_pods": total_pods
-                            }
-                    else:
-                        # No pods yet, check ArgoCD status
-                        argocd_status = await get_argocd_application_status("monitoring-stack")
-                        if argocd_status and argocd_status.get("sync_status") == "Synced":
+                            # No pods yet, still installing
                             return {
                                 "status": "installing",
-                                "progress": 15,
-                                "message": "ArgoCD application synced, waiting for pods...",
-                                "argocd_sync": argocd_status.get("sync_status"),
-                                "argocd_health": argocd_status.get("health_status")
+                                "progress": 30,
+                                "message": "Helm installation in progress...",
+                                "pods_running": 0,
+                                "total_pods": 0
                             }
-                except Exception as pod_check_error:
-                    logger.warning(f"Error checking pod status: {pod_check_error}")
+                    except Exception as pod_check_error:
+                        logger.warning(f"Error checking pod status: {pod_check_error}")
+                        # Fall back to installation status
+                        return status_info
                 
-                # Fall back to ArgoCD status if pod check fails
-                argocd_status = await get_argocd_application_status("monitoring-stack")
+                # Return the current installation status
+                return status_info
+            else:
+                # No installation status, check if component is already installed
+                try:
+                    # Check if monitoring namespace exists and has running pods
+                    pods = k8s_client.list_namespaced_pod(namespace="monitoring")
+                    if pods.items:
+                        running_pods = [pod for pod in pods.items if pod.status.phase == "Running" and 
+                                      all(container.ready for container in (pod.status.container_statuses or []))]
+                        if len(running_pods) >= 3:
+                            return {
+                                "component": component,
+                                "status": "installed",
+                                "progress": 100,
+                                "message": f"Monitoring stack is already installed ({len(running_pods)} pods running)",
+                                "pods_running": len(running_pods),
+                                "total_pods": len(pods.items)
+                            }
+                except:
+                    pass
+                
+                return {
+                    "component": component,
+                    "status": "not_installed",
+                    "progress": 0,
+                    "message": f"{component} is not installed"
+                }
         
         # For non-monitoring components, use existing logic
         if component in installation_status:
