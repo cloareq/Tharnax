@@ -11,4 +11,9 @@ nfs_client_packages:
 # Kernel modules to load
 nfs_client_kernel_modules:
   - nfs
-  - nfsd 
+  - nfsd
+
+# NFS mount configuration defaults  
+# These will be overridden by variables from the init script when available
+default_nfs_mount_point: /mnt/tharnax-nfs
+default_nfs_path: /mnt/tharnax-nfs 

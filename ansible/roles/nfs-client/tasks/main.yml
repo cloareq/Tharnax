@@ -29,8 +29,54 @@
   tags:
     - nfs_client
 
+# Create mount point for NFS share
+- name: Create NFS mount point directory
+  file:
+    path: "{{ nfs_path | default(default_nfs_mount_point) }}"
+    state: directory
+    mode: '0755'
+  tags:
+    - nfs_client
+    - nfs_mount
+
+# Check if NFS share is already mounted
+- name: Check if NFS is already mounted
+  shell: "mount | grep '{{ nfs_path | default(default_nfs_mount_point) }}'"
+  register: nfs_mount_check
+  failed_when: false
+  changed_when: false
+  tags:
+    - nfs_client
+    - nfs_mount
+
+# Mount NFS share from master node
+- name: Mount NFS share
+  shell: "mount -t nfs {{ nfs_server | default(hostvars[groups['master'][0]]['ansible_default_ipv4']['address']) }}:{{ nfs_path | default(default_nfs_path) }} {{ nfs_path | default(default_nfs_mount_point) }}"
+  when: nfs_mount_check.rc != 0
+  tags:
+    - nfs_client
+    - nfs_mount
+
+# Add NFS mount to /etc/fstab for persistence
+- name: Add NFS mount to fstab
+  lineinfile:
+    path: /etc/fstab
+    line: "{{ nfs_server | default(hostvars[groups['master'][0]]['ansible_default_ipv4']['address']) }}:{{ nfs_path | default(default_nfs_path) }} {{ nfs_path | default(default_nfs_mount_point) }} nfs defaults 0 0"
+    state: present
+    backup: yes
+  tags:
+    - nfs_client
+    - nfs_mount
+
 - name: Display NFS client status
   debug:
     msg: "NFS client installation complete. RPC services: {{ rpcinfo_result.stdout_lines | default(['Not available']) | join('\n') }}"
   tags:
-    - nfs_client 
+    - nfs_client
+
+- name: Display NFS mount status
+  debug:
+    msg: "NFS share mounted at {{ nfs_path | default(default_nfs_mount_point) }} from {{ nfs_server | default(hostvars[groups['master'][0]]['ansible_default_ipv4']['address']) }}:{{ nfs_path | default(default_nfs_path) }}"
+  tags:
+    - nfs_client
+    - nfs_mount 
