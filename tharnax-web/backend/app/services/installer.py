@@ -64,6 +64,7 @@ def create_monitoring_argocd_application(nfs_available: bool, nfs_path: Optional
             # Add ArgoCD annotations to handle health check issues
             "annotations": {
                 "argocd.argoproj.io/sync-options": "SkipDryRunOnMissingResource=true",
+                "argocd.argoproj.io/skip-health-check": "true"
             }
         },
         "grafana": {
@@ -184,7 +185,9 @@ def create_monitoring_argocd_application(nfs_available: bool, nfs_path: Optional
                 "syncOptions": [
                     "CreateNamespace=true",
                     "ServerSideApply=true",
-                    "SkipDryRunOnMissingResource=true"
+                    "SkipDryRunOnMissingResource=true",
+                    "RespectIgnoreDifferences=true",
+                    "PrunePropagationPolicy=foreground"
                 ]
             },
             "ignoreDifferences": [

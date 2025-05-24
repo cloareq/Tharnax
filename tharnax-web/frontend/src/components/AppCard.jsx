@@ -49,26 +49,61 @@ const AppCard = ({ app = {} }) => {
         try {
             setInstalling(true);
             setStatus('installing');
-            setProgress(0);
+            setProgress(5);
             setInstallMessage('Starting installation...');
+
+            console.log(`[${id}] Starting installation...`);
 
             const response = await apiClient.post(`/install/${id}`);
 
+            console.log(`[${id}] Installation response:`, response.data);
+
             if (response.data.status === 'already_installing') {
                 setInstallMessage('Installation already in progress');
+                setProgress(10);
                 // Start polling for existing installation
                 startPolling();
                 return;
+            } else if (response.data.status === 'started') {
+                setProgress(15);
+                setInstallMessage('Installation initiated successfully');
+                // Start polling for installation status
+                startPolling();
+                return;
+            } else if (response.data.status === 'error') {
+                setStatus('error');
+                setInstalling(false);
+                setProgress(0);
+                setInstallMessage(response.data.message || 'Failed to start installation');
+                console.error(`[${id}] Installation start error:`, response.data);
+                return;
             }
 
-            // Start polling for installation status
+            // Default case - start polling anyway
+            setProgress(10);
+            setInstallMessage('Installation request submitted');
             startPolling();
 
         } catch (error) {
+            console.error(`[${id}] Error starting installation:`, error);
             setStatus('error');
             setInstalling(false);
-            setInstallMessage('Failed to start installation');
-            console.error(`Error installing ${id}:`, error);
+            setProgress(0);
+
+            // Provide more specific error messages
+            if (error.response) {
+                if (error.response.status === 404) {
+                    setInstallMessage('Installation service not available');
+                } else if (error.response.status >= 500) {
+                    setInstallMessage('Server error - please try again later');
+                } else {
+                    setInstallMessage(error.response.data?.message || 'Failed to start installation');
+                }
+            } else if (error.request) {
+                setInstallMessage('Cannot connect to installation service');
+            } else {
+                setInstallMessage('Failed to start installation');
+            }
         }
     };
 
@@ -82,9 +117,12 @@ const AppCard = ({ app = {} }) => {
                 const response = await apiClient.get(`/install/${id}/status`);
                 const statusData = response.data;
 
+                console.log(`[${id}] Status polling response:`, statusData); // Debug logging
+
                 setProgress(statusData.progress || 0);
                 setInstallMessage(statusData.message || 'Installing...');
 
+                // Handle different status values from the new ArgoCD integration
                 if (statusData.status === 'completed' || statusData.status === 'installed') {
                     setStatus('installed');
                     setInstalling(false);
@@ -99,10 +137,28 @@ const AppCard = ({ app = {} }) => {
                     setStatus('error');
                     setInstalling(false);
                     setInstallMessage(statusData.message || 'Installation failed');
+                    console.error(`[${id}] Installation error:`, statusData);
                     return;
-                } else if (statusData.status === 'installing') {
+                } else if (statusData.status === 'installing' || statusData.status === 'not_found') {
+                    // Keep polling for 'installing' status or if ArgoCD app not found yet
                     setStatus('installing');
                     setInstalling(true);
+                    // For monitoring, show more detailed status if available
+                    if (id === 'monitoring' && statusData.argocd_health && statusData.argocd_sync) {
+                        setInstallMessage(`${statusData.message} (Health: ${statusData.argocd_health}, Sync: ${statusData.argocd_sync})`);
+                    }
+                } else if (statusData.status === 'not_installed') {
+                    // Installation hasn't started yet, keep polling briefly
+                    if (attempts < 5) {
+                        setStatus('installing');
+                        setInstalling(true);
+                        setInstallMessage('Waiting for installation to start...');
+                    } else {
+                        setStatus('error');
+                        setInstalling(false);
+                        setInstallMessage('Installation failed to start');
+                        return;
+                    }
                 }
 
                 attempts++;
@@ -110,29 +166,50 @@ const AppCard = ({ app = {} }) => {
                     setTimeout(pollStatus, pollInterval);
                 } else {
                     // Timeout - check one more time if it's actually installed
-                    const appsResponse = await apiClient.get('/apps');
-                    const updatedApp = appsResponse.data.find(a => a.id === id);
+                    try {
+                        const appsResponse = await apiClient.get('/apps');
+                        const updatedApp = appsResponse.data.find(a => a.id === id);
 
-                    if (updatedApp && updatedApp.installed) {
-                        setStatus('installed');
-                        setInstalling(false);
-                        setProgress(100);
-                        window.location.reload();
-                    } else {
+                        if (updatedApp && updatedApp.installed) {
+                            setStatus('installed');
+                            setInstalling(false);
+                            setProgress(100);
+                            window.location.reload();
+                        } else {
+                            setStatus('error');
+                            setInstalling(false);
+                            setInstallMessage('Installation timed out - check ArgoCD for details');
+                        }
+                    } catch (finalCheckError) {
+                        console.error(`[${id}] Final check error:`, finalCheckError);
                         setStatus('error');
                         setInstalling(false);
-                        setInstallMessage('Installation timed out');
+                        setInstallMessage('Installation status unknown');
                     }
                 }
             } catch (error) {
-                console.error('Error polling status:', error);
-                attempts++;
-                if (attempts < maxAttempts) {
+                console.error(`[${id}] Error polling status:`, error);
+
+                // More sophisticated error handling
+                if (error.response && error.response.status === 404) {
+                    // Component not found, keep trying for a bit
+                    if (attempts < 10) {
+                        setInstallMessage('Waiting for installation service...');
+                        attempts++;
+                        setTimeout(pollStatus, pollInterval);
+                        return;
+                    }
+                }
+
+                // For other errors, be more lenient in the beginning
+                if (attempts < 5) {
+                    setInstallMessage('Connecting to installation service...');
+                    attempts++;
                     setTimeout(pollStatus, pollInterval);
                 } else {
                     setStatus('error');
                     setInstalling(false);
-                    setInstallMessage('Status check failed');
+                    setInstallMessage(`Status check failed: ${error.message || 'Unknown error'}`);
                 }
             }
         };
