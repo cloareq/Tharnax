@@ -23,6 +23,10 @@ spec:
         ports:
         - containerPort: 80
           name: http
+        volumeMounts:
+        - name: nfs-storage
+          mountPath: /mnt/tharnax-nfs
+          readOnly: true
         resources:
           requests:
             cpu: 200m
@@ -42,6 +46,11 @@ spec:
             port: 80
           initialDelaySeconds: 30
           periodSeconds: 30
+      volumes:
+      - name: nfs-storage
+        hostPath:
+          path: /mnt/tharnax-nfs
+          type: Directory
 ---
 apiVersion: v1
 kind: Service

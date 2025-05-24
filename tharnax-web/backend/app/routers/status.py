@@ -13,51 +13,104 @@ router = APIRouter(
     tags=["status"],
 )
 
-def get_nfs_storage_info():
+def get_nfs_storage_info(k8s_client=None):
     """
     Get NFS storage information including disk usage
     """
     try:
-        if not os.path.exists('/etc/exports'):
-            return None
-            
+        if k8s_client:
+            try:
+                pvs = k8s_client.list_persistent_volume()
+                
+                for pv in pvs.items:
+                    if pv.spec.nfs is not None:
+                        nfs_path = pv.spec.nfs.path
+                        nfs_server = pv.spec.nfs.server
+                        
+                        try:
+                            if os.path.exists(nfs_path):
+                                usage = shutil.disk_usage(nfs_path)
+                                total_gb = round(usage.total / (1024**3), 2)
+                                used_gb = round((usage.total - usage.free) / (1024**3), 2)
+                                free_gb = round(usage.free / (1024**3), 2)
+                                usage_percent = round(((usage.total - usage.free) / usage.total) * 100, 1)
+                                
+                                return {
+                                    "path": f"{nfs_server}:{nfs_path}",
+                                    "total_gb": total_gb,
+                                    "used_gb": used_gb,
+                                    "free_gb": free_gb,
+                                    "usage_percent": usage_percent,
+                                    "status": "available"
+                                }
+                        except Exception:
+                            pass
+                        
+                        return {
+                            "path": f"{nfs_server}:{nfs_path}",
+                            "total_gb": "N/A",
+                            "used_gb": "N/A", 
+                            "free_gb": "N/A",
+                            "usage_percent": 0,
+                            "status": "available"
+                        }
+            except Exception:
+                pass
+        
+        # Check common NFS paths that might be mounted or accessible
         nfs_paths = []
-        try:
-            with open('/etc/exports', 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith('#'):
-                        path = line.split()[0]
-                        if os.path.exists(path):
-                            nfs_paths.append(path)
-        except Exception:
-            pass
-            
-        if not nfs_paths:
-            common_paths = ['/mnt/tharnax-nfs', '/mnt/nfs', '/srv/nfs']
-            for path in common_paths:
-                if os.path.exists(path) and os.path.ismount(path):
+        
+        # First check /etc/exports if accessible
+        if os.path.exists('/etc/exports'):
+            try:
+                with open('/etc/exports', 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith('#'):
+                            path = line.split()[0]
+                            if os.path.exists(path):
+                                nfs_paths.append(path)
+            except Exception:
+                pass
+        
+        # Check common mount points even if /etc/exports is not accessible        
+        common_paths = ['/mnt/tharnax-nfs', '/mnt/nfs', '/srv/nfs', '/data', '/nfs']
+        for path in common_paths:
+            if os.path.exists(path):
+                # Check if it's a directory and has some content or is a mount point
+                if os.path.isdir(path) and (os.path.ismount(path) or os.listdir(path)):
                     nfs_paths.append(path)
                     
         if not nfs_paths:
             return None
             
         nfs_path = nfs_paths[0]
-        usage = shutil.disk_usage(nfs_path)
-        
-        total_gb = round(usage.total / (1024**3), 2)
-        used_gb = round((usage.total - usage.free) / (1024**3), 2)
-        free_gb = round(usage.free / (1024**3), 2)
-        usage_percent = round(((usage.total - usage.free) / usage.total) * 100, 1)
-        
-        return {
-            "path": nfs_path,
-            "total_gb": total_gb,
-            "used_gb": used_gb,
-            "free_gb": free_gb,
-            "usage_percent": usage_percent,
-            "status": "available"
-        }
+        try:
+            usage = shutil.disk_usage(nfs_path)
+            
+            total_gb = round(usage.total / (1024**3), 2)
+            used_gb = round((usage.total - usage.free) / (1024**3), 2)
+            free_gb = round(usage.free / (1024**3), 2)
+            usage_percent = round(((usage.total - usage.free) / usage.total) * 100, 1)
+            
+            return {
+                "path": nfs_path,
+                "total_gb": total_gb,
+                "used_gb": used_gb,
+                "free_gb": free_gb,
+                "usage_percent": usage_percent,
+                "status": "available"
+            }
+        except Exception as e:
+            logger.warning(f"Could not get disk usage for {nfs_path}: {str(e)}")
+            return {
+                "path": nfs_path,
+                "total_gb": "N/A",
+                "used_gb": "N/A",
+                "free_gb": "N/A", 
+                "usage_percent": 0,
+                "status": "available"
+            }
         
     except Exception as e:
         logger.warning(f"Could not get NFS storage info: {str(e)}")
@@ -85,7 +138,7 @@ async def get_cluster_status(k8s_client: client.CoreV1Api = Depends(get_k8s_clie
         pod_count = len(pods.items)
         logger.info(f"Found {pod_count} pods")
         
-        nfs_storage = get_nfs_storage_info()
+        nfs_storage = get_nfs_storage_info(k8s_client)
         logger.info(f"NFS storage info: {nfs_storage}")
         
         result = {
