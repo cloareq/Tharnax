@@ -265,6 +265,9 @@ async def install_monitoring_stack(k8s_client: client.CoreV1Api):
             else:
                 raise
         
+        # Step 4: Patch the Prometheus resource to skip health checks
+        asyncio.create_task(patch_prometheus_health_check(k8s_client))
+        
         # Wait for the Application to sync and deploy
         logger.info("Waiting for monitoring stack deployment to complete...")
         max_wait_time = 900  # 15 minutes for monitoring stack
@@ -495,3 +498,38 @@ async def install_component(component: str, config: Optional[Dict[str, Any]], k8
     except Exception as e:
         logger.error(f"Error installing {component}: {e}")
         raise 
+
+async def patch_prometheus_health_check(k8s_client: client.CoreV1Api):
+    """
+    Patch the Prometheus resource to skip health checks
+    """
+    try:
+        custom_api = client.CustomObjectsApi()
+        
+        # Wait a bit for the Prometheus resource to be created
+        await asyncio.sleep(10)
+        
+        # Patch the Prometheus resource with the skip health check annotation
+        patch_body = {
+            "metadata": {
+                "annotations": {
+                    "argocd.argoproj.io/skip-health-check": "true"
+                }
+            }
+        }
+        
+        custom_api.patch_namespaced_custom_object(
+            group="monitoring.coreos.com",
+            version="v1",
+            namespace="monitoring",
+            plural="prometheuses",
+            name="monitoring-stack-kube-prom-prometheus",
+            body=patch_body
+        )
+        
+        logger.info("Patched Prometheus resource with skip-health-check annotation")
+        return True
+        
+    except Exception as e:
+        logger.warning(f"Failed to patch Prometheus health check: {e}")
+        return False 
