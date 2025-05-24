@@ -17,7 +17,7 @@
     k3s_token: "{{ hostvars[groups['master'][0]]['k3s_token'] }}"
     master_ip: "{{ hostvars[groups['master'][0]]['master_ip'] }}"
 
-- name: Ensure token and master IP are available (debugging)
+- name: Ensure token and master IP are available
   debug:
     msg: "Installing K3s agent connecting to {{ master_ip }} with token {{ k3s_token[:5] }}..."
 
@@ -28,8 +28,8 @@
     K3S_TOKEN={{ k3s_token }} 
     sh -s -
   register: k3s_agent_install
-  async: 600  # 10 minute timeout
-  poll: 15    # Check every 15 seconds
+  async: 600
+  poll: 15
   when: not k3s_binary.stat.exists or k3s_agent_service_status.stdout == 'not-running'
 
 - name: Display K3s agent installation result

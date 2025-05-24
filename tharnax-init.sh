@@ -1,6 +1,5 @@
 #!/bin/bash
 # tharnax-init.sh - Tharnax Homelab Infrastructure Setup Script
-# Initializes K3s cluster deployment across master and worker nodes
 
 set -e
 
@@ -12,11 +11,10 @@ NC='\033[0m'
 
 CONFIG_FILE=".tharnax.conf"
 
-# Initialize component flags
 COMPONENT_UI=false
 COMPONENT_NFS=false
 COMPONENT_ARGOCD=false
-COMPONENT_K3S=true  # Default to true, will be set to false if specific components are selected
+COMPONENT_K3S=true
 
 show_usage() {
     echo "Usage: $0 [options]"
@@ -32,7 +30,6 @@ show_usage() {
 }
 
 parse_args() {
-    # Check if specific components are requested
     SPECIFIC_COMPONENTS=false
     
     while [[ $# -gt 0 ]]; do
@@ -66,18 +63,15 @@ parse_args() {
         shift
     done
     
-    # If specific components are selected, turn off K3s installation
     if [ "$SPECIFIC_COMPONENTS" = true ]; then
         COMPONENT_K3S=false
     else
-        # If no specific components are selected, install everything
         COMPONENT_NFS=true
         COMPONENT_UI=true
         COMPONENT_ARGOCD=true
     fi
 }
 
-# Ensure required packages are installed
 ensure_prerequisites() {
     echo -e "${BLUE}Ensuring required packages are installed...${NC}"
     
@@ -127,10 +121,228 @@ save_config() {
         echo "SSH_KEY=\"$SSH_KEY\"" >> "$CONFIG_FILE"
     fi
     
+    echo "" >> "$CONFIG_FILE"
+    echo "# Component Installation State" >> "$CONFIG_FILE"
+    echo "K3S_INSTALLED=\"${K3S_INSTALLED:-false}\"" >> "$CONFIG_FILE"
+    echo "NFS_INSTALLED=\"${NFS_INSTALLED:-false}\"" >> "$CONFIG_FILE"
+    echo "UI_INSTALLED=\"${UI_INSTALLED:-false}\"" >> "$CONFIG_FILE"
+    echo "ARGOCD_INSTALLED=\"${ARGOCD_INSTALLED:-false}\"" >> "$CONFIG_FILE"
+    echo "HELM_INSTALLED=\"${HELM_INSTALLED:-false}\"" >> "$CONFIG_FILE"
+    
+    if [ -n "$ARGOCD_URL" ]; then
+        echo "ARGOCD_URL=\"$ARGOCD_URL\"" >> "$CONFIG_FILE"
+    fi
+    if [ -n "$UI_URL" ]; then
+        echo "UI_URL=\"$UI_URL\"" >> "$CONFIG_FILE"
+    fi
+    
     chmod 600 "$CONFIG_FILE"
     
-    echo -e "${BLUE}Configuration saved to $CONFIG_FILE:${NC}"
-    cat "$CONFIG_FILE"
+    echo -e "${BLUE}Configuration saved to $CONFIG_FILE${NC}"
+}
+
+# Helper function to mark a component as installed
+mark_component_installed() {
+    local component="$1"
+    local url="$2"
+    
+    case "$component" in
+        "k3s")
+            K3S_INSTALLED="true"
+            ;;
+        "nfs")
+            NFS_INSTALLED="true"
+            ;;
+        "ui")
+            UI_INSTALLED="true"
+            if [ -n "$url" ]; then
+                UI_URL="$url"
+            fi
+            ;;
+        "argocd")
+            ARGOCD_INSTALLED="true"
+            if [ -n "$url" ]; then
+                ARGOCD_URL="$url"
+            fi
+            ;;
+        "helm")
+            HELM_INSTALLED="true"
+            ;;
+    esac
+    
+    save_config
+}
+
+# Helper function to check if a component is already installed
+is_component_installed() {
+    local component="$1"
+    
+    case "$component" in
+        "k3s")
+            [ "$K3S_INSTALLED" = "true" ]
+            ;;
+        "nfs")
+            [ "$NFS_INSTALLED" = "true" ]
+            ;;
+        "ui")
+            [ "$UI_INSTALLED" = "true" ]
+            ;;
+        "argocd")
+            [ "$ARGOCD_INSTALLED" = "true" ]
+            ;;
+        "helm")
+            [ "$HELM_INSTALLED" = "true" ]
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# Enhanced detection functions that also check runtime status
+detect_k3s_installation() {
+    # Check config file first
+    if is_component_installed "k3s"; then
+        # Verify it's actually running
+        if check_existing_k3s; then
+            return 0
+        else
+            # Config says installed but not running - update config
+            K3S_INSTALLED="false"
+            save_config
+        fi
+    fi
+    
+    # Check runtime status
+    if check_existing_k3s; then
+        K3S_INSTALLED="true"
+        save_config
+        return 0
+    fi
+    
+    return 1
+}
+
+detect_nfs_installation() {
+    # Check config file first
+    if is_component_installed "nfs"; then
+        # Verify NFS is actually configured
+        if command -v kubectl >/dev/null 2>&1; then
+            if kubectl get storageclass nfs-storage >/dev/null 2>&1; then
+                return 0
+            else
+                # Config says installed but storage class not found
+                NFS_INSTALLED="false"
+                save_config
+            fi
+        else
+            return 0  # Can't verify without kubectl, trust config
+        fi
+    fi
+    
+    # Check runtime status
+    if command -v kubectl >/dev/null 2>&1; then
+        if kubectl get storageclass nfs-storage >/dev/null 2>&1; then
+            NFS_INSTALLED="true"
+            save_config
+            return 0
+        fi
+    fi
+    
+    return 1
+}
+
+detect_ui_installation() {
+    # Check config file first
+    if is_component_installed "ui"; then
+        # Verify UI is actually deployed
+        if command -v kubectl >/dev/null 2>&1; then
+            if kubectl get deployment tharnax-web -n tharnax-web >/dev/null 2>&1; then
+                return 0
+            else
+                # Config says installed but deployment not found
+                UI_INSTALLED="false"
+                save_config
+            fi
+        else
+            return 0  # Can't verify without kubectl, trust config
+        fi
+    fi
+    
+    # Check runtime status
+    if command -v kubectl >/dev/null 2>&1; then
+        if kubectl get deployment tharnax-web -n tharnax-web >/dev/null 2>&1; then
+            UI_INSTALLED="true"
+            # Try to get the UI URL
+            UI_IP=$(kubectl -n tharnax-web get service tharnax-web -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+            if [ -z "$UI_IP" ]; then
+                UI_IP="$MASTER_IP"
+            fi
+            UI_URL="http://${UI_IP}"
+            save_config
+            return 0
+        fi
+    fi
+    
+    return 1
+}
+
+detect_argocd_installation() {
+    # Check config file first
+    if is_component_installed "argocd"; then
+        # Verify ArgoCD is actually deployed
+        if command -v kubectl >/dev/null 2>&1; then
+            if kubectl get deployment argocd-server -n argocd >/dev/null 2>&1; then
+                return 0
+            else
+                # Config says installed but deployment not found
+                ARGOCD_INSTALLED="false"
+                save_config
+            fi
+        else
+            return 0  # Can't verify without kubectl, trust config
+        fi
+    fi
+    
+    # Check runtime status
+    if command -v kubectl >/dev/null 2>&1; then
+        if kubectl get deployment argocd-server -n argocd >/dev/null 2>&1; then
+            ARGOCD_INSTALLED="true"
+            # Try to get the ArgoCD URL
+            ARGOCD_IP=$(kubectl -n argocd get service argocd-server -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+            if [ -z "$ARGOCD_IP" ]; then
+                ARGOCD_IP="$MASTER_IP"
+            fi
+            ARGOCD_URL="http://${ARGOCD_IP}:8080"
+            save_config
+            return 0
+        fi
+    fi
+    
+    return 1
+}
+
+detect_helm_installation() {
+    # Check config file first
+    if is_component_installed "helm"; then
+        # Verify Helm is actually installed
+        if command -v helm >/dev/null 2>&1; then
+            return 0
+        else
+            # Config says installed but helm not found
+            HELM_INSTALLED="false"
+            save_config
+        fi
+    fi
+    
+    # Check runtime status
+    if command -v helm >/dev/null 2>&1; then
+        HELM_INSTALLED="true"
+        save_config
+        return 0
+    fi
+    
+    return 1
 }
 
 load_config() {
@@ -212,13 +424,11 @@ collect_worker_info() {
             echo -e "Previous Worker $i IP: ${GREEN}${previous_ip}${NC}"
             read -p "Use this IP? (Y/n or enter new IP): " confirm
             
-            # Check if input matches IP pattern first (user entered a new IP directly)
             if [[ $confirm =~ $IP_REGEX ]]; then
                 WORKER_IPS[$i]="$confirm"
                 eval "WORKER_IP_$i=\"$confirm\""
                 echo -e "${GREEN}Updated Worker $i IP to: ${confirm}${NC}"
             elif [[ "$confirm" =~ ^[Nn] ]]; then
-                # User wants to change but didn't provide the IP yet
                 read -p "Enter new IP for Worker $i: " WORKER_IP
                 
                 if ! [[ $WORKER_IP =~ $IP_REGEX ]]; then
@@ -228,7 +438,6 @@ collect_worker_info() {
                 WORKER_IPS[$i]="$WORKER_IP"
                 eval "WORKER_IP_$i=\"$WORKER_IP\""
             else
-                # User entered Y or just pressed Enter (default)
                 WORKER_IPS[$i]="$previous_ip"
                 echo -e "${GREEN}Using saved Worker $i IP: ${previous_ip}${NC}"
             fi
@@ -631,6 +840,17 @@ run_ansible() {
 deploy_web_ui() {
     echo ""
     echo -e "${BLUE}Deploying Tharnax Web UI...${NC}"
+    
+    # Check if UI is already installed
+    if detect_ui_installation; then
+        echo -e "${GREEN}✓ Tharnax Web UI is already installed and running!${NC}"
+        if [ -n "$UI_URL" ]; then
+            echo -e "${GREEN}  Access it at: ${UI_URL}${NC}"
+        fi
+        echo -e "${YELLOW}Skipping UI installation.${NC}"
+        return 0
+    fi
+    
     echo -e "${YELLOW}This will deploy a web interface to manage your cluster.${NC}"
     
     # Check for kubectl
@@ -641,7 +861,7 @@ deploy_web_ui() {
         
         if ! command -v kubectl >/dev/null 2>&1; then
             echo -e "${RED}Failed to set up kubectl. Deployment aborted.${NC}"
-            return
+            return 1
         fi
     fi
     
@@ -649,14 +869,14 @@ deploy_web_ui() {
     if [ ! -f "./tharnax-web/deploy.sh" ]; then
         echo -e "${RED}Deployment script not found at ./tharnax-web/deploy.sh${NC}"
         echo -e "${YELLOW}Did you clone the complete Tharnax repository?${NC}"
-        return
+        return 1
     fi
     
     # Verify kubernetes manifests exist
     if [ ! -d "./tharnax-web/kubernetes" ]; then
         echo -e "${RED}Kubernetes manifests directory not found at ./tharnax-web/kubernetes${NC}"
         echo -e "${YELLOW}Did you clone the complete Tharnax repository?${NC}"
-        return
+        return 1
     fi
     
     # Check for required manifest files
@@ -665,7 +885,7 @@ deploy_web_ui() {
         if [ ! -f "./tharnax-web/kubernetes/$file" ]; then
             echo -e "${RED}Required manifest file $file not found in ./tharnax-web/kubernetes/${NC}"
             echo -e "${YELLOW}Did you clone the complete Tharnax repository?${NC}"
-            return
+            return 1
         fi
     done
     
@@ -683,31 +903,39 @@ deploy_web_ui() {
             if [ -n "$EXTERNAL_IP" ]; then
                 echo -e "${GREEN}Web UI is now available at:${NC}"
                 echo -e "${GREEN}http://${EXTERNAL_IP}${NC}"
+                mark_component_installed "ui" "http://${EXTERNAL_IP}"
             else
                 echo -e "${YELLOW}LoadBalancer still pending. Check status with:${NC}"
                 echo -e "${YELLOW}kubectl -n tharnax-web get svc${NC}"
                 echo -e "${GREEN}Meanwhile, you can try accessing via node IP:${NC}"
                 echo -e "${GREEN}http://${MASTER_IP}${NC}"
+                mark_component_installed "ui" "http://${MASTER_IP}"
             fi
+        else
+            mark_component_installed "ui"
         fi
+        return 0
     else
         echo -e "${RED}Web UI deployment failed. Please check the logs for details.${NC}"
         echo -e "${YELLOW}You can try running the deployment script manually:${NC}"
         echo -e "${YELLOW}./tharnax-web/deploy.sh${NC}"
+        return 1
     fi
 }
 
 install_helm() {
     echo ""
     echo -e "${BLUE}Installing Helm...${NC}"
-    echo -e "${YELLOW}Helm is required for managing Kubernetes applications.${NC}"
     
     # Check if Helm is already installed
-    if command -v helm >/dev/null 2>&1; then
-        echo -e "${GREEN}Helm is already installed.${NC}"
+    if detect_helm_installation; then
+        echo -e "${GREEN}✓ Helm is already installed!${NC}"
         helm version --short
+        echo -e "${YELLOW}Skipping Helm installation.${NC}"
         return 0
     fi
+    
+    echo -e "${YELLOW}Helm is required for managing Kubernetes applications.${NC}"
     
     # Download and install Helm
     echo -e "${BLUE}Downloading and installing Helm...${NC}"
@@ -728,6 +956,7 @@ install_helm() {
     if command -v helm >/dev/null 2>&1; then
         echo -e "${GREEN}Helm installed successfully.${NC}"
         helm version --short
+        mark_component_installed "helm"
         return 0
     else
         echo -e "${RED}Helm installation verification failed.${NC}"
@@ -738,6 +967,19 @@ install_helm() {
 deploy_argocd() {
     echo ""
     echo -e "${BLUE}Deploying Argo CD...${NC}"
+    
+    # Check if ArgoCD is already installed
+    if detect_argocd_installation; then
+        echo -e "${GREEN}✓ Argo CD is already installed and running!${NC}"
+        if [ -n "$ARGOCD_URL" ]; then
+            echo -e "${GREEN}  Access it at: ${ARGOCD_URL}${NC}"
+            echo -e "${BLUE}  Username: ${GREEN}admin${NC}"
+            echo -e "${BLUE}  Get password: ${YELLOW}kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath=\"{.data.password}\" | base64 -d${NC}"
+        fi
+        echo -e "${YELLOW}Skipping Argo CD installation.${NC}"
+        return 0
+    fi
+    
     echo -e "${YELLOW}This will deploy Argo CD for GitOps continuous deployment to your cluster.${NC}"
     
     # Check for kubectl
@@ -827,7 +1069,7 @@ EOF
         echo -e "${YELLOW}Argo CD server pod may not be fully ready yet, but continuing...${NC}"
     fi
     
-    # Get the access URL
+    # Get the access URL and mark as installed
     echo -e "${BLUE}Retrieving Argo CD access information...${NC}"
     
     # Try to get LoadBalancer IP, fallback to master IP
@@ -842,16 +1084,13 @@ EOF
     
     ARGOCD_URL="http://${ARGOCD_IP}:8080"
     
-    # Save Argo CD URL to config
-    if [ -f "$CONFIG_FILE" ]; then
-        # Remove any existing ARGOCD_URL line and add the new one
-        grep -v "^ARGOCD_URL=" "$CONFIG_FILE" > "$CONFIG_FILE.tmp" 2>/dev/null || true
-        echo "ARGOCD_URL=\"$ARGOCD_URL\"" >> "$CONFIG_FILE.tmp"
-        mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
-        chmod 600 "$CONFIG_FILE"
-    fi
+    # Mark ArgoCD as installed
+    mark_component_installed "argocd" "$ARGOCD_URL"
     
-    echo -e "${GREEN}Argo CD deployment completed.${NC}"
+    echo -e "${GREEN}Argo CD deployment completed successfully!${NC}"
+    echo -e "${GREEN}  Access it at: ${ARGOCD_URL}${NC}"
+    echo -e "${BLUE}  Username: ${GREEN}admin${NC}"
+    echo -e "${BLUE}  Get password: ${YELLOW}kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath=\"{.data.password}\" | base64 -d${NC}"
     echo -e "${BLUE}Note: It may take a few minutes for Argo CD to be fully accessible.${NC}"
     
     return 0
@@ -860,6 +1099,18 @@ EOF
 configure_nfs_storage() {
     echo ""
     echo -e "${BLUE}Configuring NFS Storage for Kubernetes${NC}"
+    
+    # Check if NFS is already configured
+    if detect_nfs_installation; then
+        echo -e "${GREEN}✓ NFS storage is already configured!${NC}"
+        if command -v kubectl >/dev/null 2>&1; then
+            echo -e "${BLUE}Current NFS storage classes:${NC}"
+            kubectl get storageclass | grep nfs || echo -e "${YELLOW}  No NFS storage classes found${NC}"
+        fi
+        echo -e "${YELLOW}Skipping NFS configuration.${NC}"
+        return 0
+    fi
+    
     echo -e "${YELLOW}This will set up persistent storage for your K3s cluster using NFS.${NC}"
     
     read -p "Do you already have an NFS server on your network? (y/N): " has_nfs_server
@@ -1124,6 +1375,9 @@ if [[ "$is_mounted" != *"Not mounted"* || "$has_parts" != *"Not mounted"* ]]; th
     echo -e "${GREEN}NFS storage successfully configured for your Kubernetes cluster.${NC}"
     echo -e "${GREEN}You can now use the storage class 'nfs-storage' for your persistent volumes.${NC}"
     
+    # Mark NFS as installed
+    mark_component_installed "nfs"
+    
     return 0
 }
 
@@ -1239,6 +1493,25 @@ EOF
 
 check_existing_k3s() {
     echo -e "${BLUE}Checking for existing K3s installation...${NC}"
+# First try local check if we're on the master node
+if command -v kubectl >/dev/null 2>&1; then
+    if kubectl get nodes >/dev/null 2>&1; then
+        node_count=$(kubectl get nodes 2>/dev/null | grep -v NAME | wc -l)
+        
+        # We expect at least 1 node (the master)
+        if [ "$node_count" -ge 1 ]; then
+            echo -e "${GREEN}K3s is already installed and running.${NC}"
+            
+            # Display the nodes
+            echo -e "${BLUE}Current cluster nodes:${NC}"
+            kubectl get nodes 2>/dev/null
+            
+            return 0
+        fi
+    fi
+fi
+
+# If local check failed, try SSH check 
     
     if [ "$AUTH_TYPE" = "password" ]; then
         # Use sshpass for password authentication
@@ -1327,7 +1600,7 @@ if [ "$COMPONENT_K3S" = false ]; then
         check_sshpass
     fi
     
-    if ! check_existing_k3s; then
+    if ! detect_k3s_installation; then
         echo -e "${RED}ERROR: K3s is not installed but is required for the requested component(s).${NC}"
         echo -e "${YELLOW}Please first install K3s by running: ${NC}${GREEN}./tharnax-init.sh${NC}${YELLOW} without options${NC}"
         exit 1
@@ -1363,9 +1636,9 @@ echo ""
 
 # Check if K3s is already installed
 k3s_installed=false
-if check_existing_k3s; then
+if detect_k3s_installation; then
     k3s_installed=true
-    echo -e "${GREEN}K3s is already installed and running.${NC}"
+    echo -e "${GREEN}✓ K3s is already installed and running!${NC}"
     echo -e "${YELLOW}Proceeding with additional component installation.${NC}"
 else
     echo -e "${YELLOW}Ready to run Ansible playbook to deploy K3s.${NC}"
@@ -1373,7 +1646,13 @@ else
     
     if [[ -z "$proceed" || "$proceed" =~ ^[Yy] ]]; then
         run_ansible
-        echo -e "${GREEN}K3s installation complete!${NC}"
+        if [ $? -eq 0 ]; then
+            echo -e "${GREEN}K3s installation complete!${NC}"
+            mark_component_installed "k3s"
+        else
+            echo -e "${RED}K3s installation failed!${NC}"
+            exit 1
+        fi
     else
         echo "Deployment cancelled. You can run the Ansible playbook later with:"
         echo "cd ansible && ansible-playbook -i inventory.ini playbook.yml"

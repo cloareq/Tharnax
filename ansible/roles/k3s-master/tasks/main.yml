@@ -28,8 +28,8 @@
     --disable-cloud-controller 
     --disable=traefik
   register: k3s_server_install
-  async: 600  # 10 minute timeout
-  poll: 15    # Check every 15 seconds
+  async: 600
+  poll: 15
   when: not k3s_binary.stat.exists or k3s_service_status.stdout == 'not-running'
 
 - name: Display K3s installation result
@@ -66,6 +66,6 @@
     k3s_token: "{{ k3s_token_b64.content | b64decode | trim }}"
     master_ip: "{{ hostvars[inventory_hostname]['ansible_host'] }}"
 
-- name: Ensure token and master IP are set (debugging)
+- name: Ensure token and master IP are set
   debug:
     msg: "K3s master installed at {{ master_ip }} with token {{ k3s_token[:5] }}..." 
