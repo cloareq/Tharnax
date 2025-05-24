@@ -78,7 +78,7 @@ async def check_monitoring_argocd_status(k8s_client: client.CoreV1Api) -> bool:
         # 2. Sync status is "Synced" 
         # 3. Actual pods are running
         health_status = health.get("status")
-        is_healthy = health_status == "Healthy" or health_status is None or health_status == ""
+        is_healthy = health_status in ["Healthy", None, ""]
         is_synced = sync.get("status") == "Synced"
         
         logger.info(f"Monitoring stack status - Health: {health_status} (treated as healthy: {is_healthy}), Sync: {sync.get('status')}")

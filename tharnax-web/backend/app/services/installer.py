@@ -195,21 +195,41 @@ def create_monitoring_argocd_application(nfs_available: bool, nfs_path: Optional
                     "group": "monitoring.coreos.com",
                     "kind": "Prometheus",
                     "jqPathExpressions": [
-                        ".spec.remoteWrite[]?.writeRelabelConfigs[]?.action"
+                        ".spec.remoteWrite[]?.writeRelabelConfigs[]?.action",
+                        ".spec.ruleNamespaceSelector",
+                        ".spec.serviceMonitorNamespaceSelector", 
+                        ".spec.podMonitorNamespaceSelector",
+                        ".spec.probeNamespaceSelector",
+                        ".spec.replicas",
+                        ".spec.retention",
+                        ".spec.retentionSize",
+                        ".metadata.resourceVersion",
+                        ".status"
+                    ]
+                },
+                {
+                    "group": "monitoring.coreos.com",
+                    "kind": "Alertmanager",
+                    "jqPathExpressions": [
+                        ".spec.replicas",
+                        ".metadata.resourceVersion",
+                        ".status"
                     ]
                 },
                 {
                     "group": "admissionregistration.k8s.io",
                     "kind": "ValidatingWebhookConfiguration",
                     "jqPathExpressions": [
-                        ".webhooks[]?.clientConfig.caBundle"
+                        ".webhooks[]?.clientConfig.caBundle",
+                        ".metadata.resourceVersion"
                     ]
                 },
                 {
                     "group": "admissionregistration.k8s.io",
                     "kind": "MutatingWebhookConfiguration",
                     "jqPathExpressions": [
-                        ".webhooks[]?.clientConfig.caBundle"
+                        ".webhooks[]?.clientConfig.caBundle",
+                        ".metadata.resourceVersion"
                     ]
                 }
             ]
