@@ -57,7 +57,8 @@ def create_monitoring_helm_values(nfs_available: bool, nfs_path: Optional[str] =
                 "scrapeInterval": "30s",
                 "evaluationInterval": "30s",
                 "enableAdminAPI": True,
-                "walCompression": True
+                "walCompression": True,
+                "maximumStartupDurationSeconds": 600
             }
         },
         "grafana": {

@@ -33,12 +33,6 @@ spec:
           mountPath: /usr/local/bin/helm
           subPath: helm
           readOnly: true
-        - name: kubeconfig
-          mountPath: /etc/rancher/k3s
-          readOnly: true
-        env:
-        - name: KUBECONFIG
-          value: /etc/rancher/k3s/k3s.yaml
         resources:
           requests:
             cpu: 200m
@@ -66,10 +60,6 @@ spec:
       - name: host-usr-local-bin
         hostPath:
           path: /usr/local/bin
-          type: Directory
-      - name: kubeconfig
-        hostPath:
-          path: /etc/rancher/k3s
           type: Directory
 ---
 apiVersion: v1
