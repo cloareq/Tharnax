@@ -163,7 +163,6 @@ def create_monitoring_argocd_application(nfs_available: bool, nfs_path: Optional
             "source": {
                 "repoURL": "https://prometheus-community.github.io/helm-charts",
                 "chart": "kube-prometheus-stack",
-                "targetRevision": "58.7.2",  # Use a more recent stable version
                 "helm": {
                     "values": yaml.dump(helm_values)
                 }
