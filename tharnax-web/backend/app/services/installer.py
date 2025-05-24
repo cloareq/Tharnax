@@ -64,13 +64,26 @@ def create_monitoring_argocd_application(nfs_available: bool, nfs_path: Optional
                 "listenLocal": False,
                 "enableRemoteWriteReceiver": False,
                 "disableCompaction": False,
-                "enableFeatures": []
+                "enableFeatures": [],
+                "web": {
+                    "enableLifecycle": True,
+                    "enableAdminAPI": True,
+                    "routePrefix": "/",
+                    "externalUrl": ""
+                }
             },
             "service": {
                 "type": "LoadBalancer",
                 "port": 9090,
                 "targetPort": 9090,
-                "additionalPorts": []
+                "additionalPorts": [
+                    {
+                        "name": "reloader-web",
+                        "port": 8081,
+                        "targetPort": 8080,
+                        "protocol": "TCP"
+                    }
+                ]
             },
             "servicePerReplica": {
                 "enabled": False
@@ -124,10 +137,19 @@ def create_monitoring_argocd_application(nfs_available: bool, nfs_path: Optional
                 }
             },
             "admissionWebhooks": {
-                "enabled": False
+                "enabled": True,
+                "patch": {
+                    "enabled": True,
+                    "image": {
+                        "pullPolicy": "IfNotPresent"
+                    }
+                },
+                "certManager": {
+                    "enabled": False
+                }
             },
             "tls": {
-                "enabled": False
+                "enabled": True
             }
         },
         "global": {
