@@ -5,6 +5,7 @@ import os
 from kubernetes import client
 from kubernetes.client.rest import ApiException
 from typing import Dict, Any, Optional
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,11 @@ def create_monitoring_argocd_application(nfs_available: bool, nfs_path: Optional
         "prometheus": {
             "prometheusSpec": {
                 "retention": "15d",
-                "retentionSize": "10GB"
+                "retentionSize": "10GB",
+                "scrapeInterval": "30s",
+                "evaluationInterval": "30s",
+                "enableAdminAPI": True,
+                "walCompression": True
             }
         },
         "grafana": {
@@ -65,11 +70,14 @@ def create_monitoring_argocd_application(nfs_available: bool, nfs_path: Optional
             "persistence": {
                 "enabled": True,
                 "size": "1Gi"
-            }
+            },
+            "defaultDashboardsEnabled": True,
+            "adminUser": "admin"
         },
         "alertmanager": {
             "alertmanagerSpec": {
-                "retention": "120h"
+                "retention": "120h",
+                "storage": {}
             }
         },
         "kubeStateMetrics": {
@@ -80,7 +88,23 @@ def create_monitoring_argocd_application(nfs_available: bool, nfs_path: Optional
         },
         "prometheusOperator": {
             "enabled": True,
-            "manageCrds": False  # Don't manage CRDs to avoid issues
+            "manageCrds": False,  # Don't manage CRDs to avoid issues
+            "prometheusConfigReloader": {
+                "resources": {
+                    "requests": {
+                        "cpu": "200m",
+                        "memory": "50Mi"
+                    },
+                    "limits": {
+                        "cpu": "200m", 
+                        "memory": "50Mi"
+                    }
+                }
+            }
+        },
+        "global": {
+            "scrape_interval": "15s",
+            "evaluation_interval": "15s"
         }
     }
     
@@ -223,8 +247,8 @@ async def install_monitoring_stack(k8s_client: client.CoreV1Api):
         
         # Wait for the Application to sync and deploy
         logger.info("Waiting for monitoring stack deployment to complete...")
-        max_wait_time = 600  # 10 minutes
-        wait_interval = 30   # 30 seconds
+        max_wait_time = 900  # 15 minutes for monitoring stack
+        wait_interval = 15   # 15 seconds for more frequent updates
         elapsed_time = 0
         
         while elapsed_time < max_wait_time:
@@ -237,6 +261,9 @@ async def install_monitoring_stack(k8s_client: client.CoreV1Api):
                     # Check for running pods in monitoring namespace
                     pods = k8s_client.list_namespaced_pod(namespace="monitoring")
                     running_pods = [pod for pod in pods.items if pod.status.phase == "Running"]
+                    total_pods = len(pods.items)
+                    
+                    logger.info(f"Monitoring namespace: {len(running_pods)}/{total_pods} pods running")
                     
                     # We need at least 3 main components running: prometheus, grafana, alertmanager
                     if len(running_pods) >= 3:
@@ -270,12 +297,12 @@ async def install_monitoring_stack(k8s_client: client.CoreV1Api):
                         else:
                             logger.info(f"Services status - Grafana ready: {grafana_ready}, Prometheus ready: {prometheus_ready}")
                 
-                time.sleep(wait_interval)
+                await asyncio.sleep(wait_interval)  # Use asyncio.sleep for proper async behavior
                 elapsed_time += wait_interval
                 logger.info(f"Still waiting for monitoring stack deployment... ({elapsed_time}s elapsed)")
             except Exception as e:
                 logger.warning(f"Error checking deployment status: {e}")
-                time.sleep(wait_interval)
+                await asyncio.sleep(wait_interval)
                 elapsed_time += wait_interval
         
         logger.warning("Monitoring stack deployment timed out, but Application was created")
@@ -409,7 +436,7 @@ async def install_prometheus_crds(k8s_client: client.CoreV1Api):
 
 async def install_component(component: str, config: Optional[Dict[str, Any]], k8s_client: client.CoreV1Api):
     """
-    Install a component in the cluster.
+    Install a component in the cluster with improved concurrency support
     """
     logger.info(f"Starting installation of {component} with config: {config}")
     
@@ -417,7 +444,7 @@ async def install_component(component: str, config: Optional[Dict[str, Any]], k8
         if component == "monitoring":
             return await install_monitoring_stack(k8s_client)
         else:
-            # Legacy installation for other components
+            # Legacy installation for other components with async support
             # Create namespace for the component
             try:
                 namespace = client.V1Namespace(
@@ -432,12 +459,16 @@ async def install_component(component: str, config: Optional[Dict[str, Any]], k8
                     logger.error(f"Error creating namespace: {e}")
                     raise
             
-            # Simulate installation steps with delays
+            # Simulate installation steps with delays (using async sleep)
             steps = ["preparing", "deploying", "configuring", "starting", "completed"]
             
-            for step in steps:
+            for i, step in enumerate(steps):
                 logger.info(f"{component}: {step}")
-                time.sleep(2)  # Simulate work being done
+                await asyncio.sleep(2)  # Use async sleep to not block other installations
+                
+                # Calculate progress percentage
+                progress = int((i + 1) / len(steps) * 100)
+                logger.info(f"{component} installation progress: {progress}%")
             
             logger.info(f"Completed installation of {component}")
             return True

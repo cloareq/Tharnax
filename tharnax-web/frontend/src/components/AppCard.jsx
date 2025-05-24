@@ -37,59 +37,108 @@ const AppCard = ({ app = {} }) => {
 
     const [installing, setInstalling] = useState(false);
     const [status, setStatus] = useState(installed ? 'installed' : 'notInstalled');
+    const [progress, setProgress] = useState(0);
+    const [installMessage, setInstallMessage] = useState('');
 
     const handleInstall = async () => {
+        // Prevent multiple installation attempts
+        if (installing || status === 'installed') {
+            return;
+        }
+
         try {
             setInstalling(true);
             setStatus('installing');
+            setProgress(0);
+            setInstallMessage('Starting installation...');
 
-            await apiClient.post(`/install/${id}`);
+            const response = await apiClient.post(`/install/${id}`);
 
-            // Poll for installation status instead of fixed timeout
-            const pollInterval = 5000; // 5 seconds
-            const maxAttempts = 120; // 10 minutes total
-            let attempts = 0;
+            if (response.data.status === 'already_installing') {
+                setInstallMessage('Installation already in progress');
+                // Start polling for existing installation
+                startPolling();
+                return;
+            }
 
-            const pollStatus = async () => {
-                try {
-                    const response = await apiClient.get('/apps');
-                    const updatedApp = response.data.find(a => a.id === id);
-
-                    if (updatedApp && updatedApp.installed) {
-                        setStatus('installed');
-                        setInstalling(false);
-                        window.location.reload(); // Refresh to get updated URLs
-                        return;
-                    }
-
-                    attempts++;
-                    if (attempts < maxAttempts) {
-                        setTimeout(pollStatus, pollInterval);
-                    } else {
-                        // Timeout - still installing but too long
-                        setStatus('error');
-                        setInstalling(false);
-                    }
-                } catch (error) {
-                    console.error('Error polling status:', error);
-                    attempts++;
-                    if (attempts < maxAttempts) {
-                        setTimeout(pollStatus, pollInterval);
-                    } else {
-                        setStatus('error');
-                        setInstalling(false);
-                    }
-                }
-            };
-
-            // Start polling after a short delay
-            setTimeout(pollStatus, pollInterval);
+            // Start polling for installation status
+            startPolling();
 
         } catch (error) {
             setStatus('error');
             setInstalling(false);
+            setInstallMessage('Failed to start installation');
             console.error(`Error installing ${id}:`, error);
         }
+    };
+
+    const startPolling = () => {
+        const pollInterval = 3000; // 3 seconds
+        const maxAttempts = 300; // 15 minutes total (300 * 3 seconds)
+        let attempts = 0;
+
+        const pollStatus = async () => {
+            try {
+                const response = await apiClient.get(`/install/${id}/status`);
+                const statusData = response.data;
+
+                setProgress(statusData.progress || 0);
+                setInstallMessage(statusData.message || 'Installing...');
+
+                if (statusData.status === 'completed' || statusData.status === 'installed') {
+                    setStatus('installed');
+                    setInstalling(false);
+                    setProgress(100);
+                    setInstallMessage('Installation completed');
+                    // Refresh the page to get updated URLs
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 1000);
+                    return;
+                } else if (statusData.status === 'error') {
+                    setStatus('error');
+                    setInstalling(false);
+                    setInstallMessage(statusData.message || 'Installation failed');
+                    return;
+                } else if (statusData.status === 'installing') {
+                    setStatus('installing');
+                    setInstalling(true);
+                }
+
+                attempts++;
+                if (attempts < maxAttempts) {
+                    setTimeout(pollStatus, pollInterval);
+                } else {
+                    // Timeout - check one more time if it's actually installed
+                    const appsResponse = await apiClient.get('/apps');
+                    const updatedApp = appsResponse.data.find(a => a.id === id);
+
+                    if (updatedApp && updatedApp.installed) {
+                        setStatus('installed');
+                        setInstalling(false);
+                        setProgress(100);
+                        window.location.reload();
+                    } else {
+                        setStatus('error');
+                        setInstalling(false);
+                        setInstallMessage('Installation timed out');
+                    }
+                }
+            } catch (error) {
+                console.error('Error polling status:', error);
+                attempts++;
+                if (attempts < maxAttempts) {
+                    setTimeout(pollStatus, pollInterval);
+                } else {
+                    setStatus('error');
+                    setInstalling(false);
+                    setInstallMessage('Status check failed');
+                }
+            }
+        };
+
+        // Start polling immediately
+        pollStatus();
     };
 
     const handleUrlClick = (targetUrl) => {
@@ -129,6 +178,20 @@ const AppCard = ({ app = {} }) => {
                     <div className="mt-2 inline-block px-2 py-1 text-xs font-medium rounded-full bg-gray-700">
                         {category}
                     </div>
+
+                    {/* Installation progress */}
+                    {installing && (
+                        <div className="mt-3">
+                            <div className="text-xs text-gray-400 mb-1">{installMessage}</div>
+                            <div className="w-full bg-gray-700 rounded-full h-2">
+                                <div
+                                    className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                                    style={{ width: `${progress}%` }}
+                                ></div>
+                            </div>
+                            <div className="text-xs text-gray-400 mt-1">{progress}%</div>
+                        </div>
+                    )}
 
                     {/* Multiple URL buttons for monitoring stack */}
                     {isInstalled && hasUrls && (
