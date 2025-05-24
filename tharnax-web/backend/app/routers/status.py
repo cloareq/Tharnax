@@ -62,7 +62,7 @@ def get_nfs_storage_info(k8s_client=None):
             usage_percent = round(((usage.total - usage.free) / usage.total) * 100, 1)
             
             # Return the root NFS path, not specific PVC paths
-            display_path = f"{nfs_server}:{nfs_root_path}" if nfs_server else nfs_root_path
+            display_path = nfs_root_path
             
             return {
                 "path": display_path,
@@ -74,7 +74,7 @@ def get_nfs_storage_info(k8s_client=None):
             }
         except Exception as e:
             logger.warning(f"Could not get disk usage for {nfs_root_path}: {str(e)}")
-            display_path = f"{nfs_server}:{nfs_root_path}" if nfs_server else nfs_root_path
+            display_path = nfs_root_path
             return {
                 "path": display_path,
                 "total_gb": "N/A",

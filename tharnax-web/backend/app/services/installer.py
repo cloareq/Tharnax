@@ -59,12 +59,23 @@ def create_monitoring_argocd_application(nfs_available: bool, nfs_path: Optional
                 "scrapeInterval": "30s",
                 "evaluationInterval": "30s",
                 "enableAdminAPI": True,
-                "walCompression": True
+                "walCompression": True,
+                "portName": "web",
+                "listenLocal": False,
+                "enableRemoteWriteReceiver": False
             },
             "service": {
                 "type": "LoadBalancer",
                 "port": 9090,
-                "targetPort": 9090
+                "targetPort": 9090,
+                "ports": [
+                    {
+                        "name": "web",
+                        "port": 9090,
+                        "targetPort": 9090,
+                        "protocol": "TCP"
+                    }
+                ]
             }
         },
         "grafana": {
