@@ -16,6 +16,8 @@ spec:
         app: tharnax-web
     spec:
       serviceAccountName: tharnax-backend
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: "true"
       containers:
       - name: tharnax-web
         image: quentinc/tharnax:latest
@@ -27,6 +29,16 @@ spec:
         - name: nfs-storage
           mountPath: /mnt/tharnax-nfs
           readOnly: true
+        - name: host-usr-local-bin
+          mountPath: /usr/local/bin/helm
+          subPath: helm
+          readOnly: true
+        - name: kubeconfig
+          mountPath: /etc/rancher/k3s
+          readOnly: true
+        env:
+        - name: KUBECONFIG
+          value: /etc/rancher/k3s/k3s.yaml
         resources:
           requests:
             cpu: 200m
@@ -50,6 +62,14 @@ spec:
       - name: nfs-storage
         hostPath:
           path: /mnt/tharnax-nfs
+          type: Directory
+      - name: host-usr-local-bin
+        hostPath:
+          path: /usr/local/bin
+          type: Directory
+      - name: kubeconfig
+        hostPath:
+          path: /etc/rancher/k3s
           type: Directory
 ---
 apiVersion: v1

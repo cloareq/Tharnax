@@ -177,11 +177,18 @@ async def install_monitoring_stack(k8s_client: client.CoreV1Api):
         
         # Step 5: Add Prometheus Community Helm repository
         logger.info("Adding Prometheus Community Helm repository...")
+        
+        # Set environment for in-cluster access
+        env = os.environ.copy()
+        env["KUBERNETES_SERVICE_HOST"] = "kubernetes.default.svc.cluster.local"
+        env["KUBERNETES_SERVICE_PORT"] = "443"
+        
         process = await asyncio.create_subprocess_exec(
             "helm", "repo", "add", "prometheus-community", 
             "https://prometheus-community.github.io/helm-charts",
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
+            env=env
         )
         stdout, stderr = await process.communicate()
         if process.returncode != 0:
@@ -192,7 +199,8 @@ async def install_monitoring_stack(k8s_client: client.CoreV1Api):
         process = await asyncio.create_subprocess_exec(
             "helm", "repo", "update",
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
+            env=env
         )
         await process.communicate()
         
@@ -205,7 +213,8 @@ async def install_monitoring_stack(k8s_client: client.CoreV1Api):
             "--values", values_file,
             "--wait", "--timeout", "15m",
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
+            env=env
         )
         
         stdout, stderr = await process.communicate()
