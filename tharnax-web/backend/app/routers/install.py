@@ -81,26 +81,50 @@ async def install_app(
 
 async def install_component_with_status(component: str, config: Dict[str, Any], k8s_client: client.CoreV1Api):
     """
-    Wrapper function to track installation status
+    Wrapper function to track installation status with ArgoCD integration
     """
     try:
         # Update status to installing
         installation_status[component]["status"] = "installing"
-        installation_status[component]["progress"] = 10
-        installation_status[component]["message"] = f"Installing {component}..."
+        installation_status[component]["progress"] = 5
+        installation_status[component]["message"] = f"Initializing {component} installation..."
         
-        # Perform the actual installation
-        result = await install_component(component, config, k8s_client)
-        
-        if result:
-            installation_status[component]["status"] = "completed"
-            installation_status[component]["progress"] = 100
-            installation_status[component]["message"] = f"Installation of {component} completed successfully"
-            installation_status[component]["completed_at"] = datetime.now().isoformat()
+        if component == "monitoring":
+            # Special handling for monitoring with ArgoCD tracking
+            installation_status[component]["progress"] = 10
+            installation_status[component]["message"] = "Creating ArgoCD Application..."
+            
+            # Perform the actual installation
+            result = await install_component(component, config, k8s_client)
+            
+            if result:
+                # Don't immediately mark as completed - let ArgoCD tracking handle this
+                installation_status[component]["progress"] = 20
+                installation_status[component]["message"] = "ArgoCD Application created, deployment starting..."
+                
+                # The actual completion will be tracked by the status endpoint checking ArgoCD
+                logger.info(f"Monitoring installation initiated successfully, ArgoCD will handle deployment")
+            else:
+                installation_status[component]["status"] = "error"
+                installation_status[component]["progress"] = 0
+                installation_status[component]["message"] = f"Failed to create ArgoCD Application for {component}"
         else:
-            installation_status[component]["status"] = "error"
-            installation_status[component]["progress"] = 0
-            installation_status[component]["message"] = f"Installation of {component} failed"
+            # Legacy installation for other components
+            installation_status[component]["progress"] = 10
+            installation_status[component]["message"] = f"Installing {component}..."
+            
+            # Perform the actual installation
+            result = await install_component(component, config, k8s_client)
+            
+            if result:
+                installation_status[component]["status"] = "completed"
+                installation_status[component]["progress"] = 100
+                installation_status[component]["message"] = f"Installation of {component} completed successfully"
+                installation_status[component]["completed_at"] = datetime.now().isoformat()
+            else:
+                installation_status[component]["status"] = "error"
+                installation_status[component]["progress"] = 0
+                installation_status[component]["message"] = f"Installation of {component} failed"
     
     except Exception as e:
         logger.error(f"Error during installation of {component}: {str(e)}")
@@ -114,7 +138,7 @@ async def get_install_status(
     k8s_client: client.CoreV1Api = Depends(get_k8s_client)
 ):
     """
-    Get installation status for a specific component
+    Get installation status for a specific component with ArgoCD integration
     """
     # Check if component is valid
     if component not in VALID_COMPONENTS:
@@ -124,20 +148,68 @@ async def get_install_status(
     logger.info(f"Checking installation status for '{component}'")
     
     try:
-        # Check if we have status information
+        # Special handling for monitoring component with ArgoCD integration
+        if component == "monitoring":
+            # Check if we have an ongoing installation
+            if component in installation_status and installation_status[component]["status"] == "installing":
+                # Get real-time progress from ArgoCD
+                argocd_progress = await get_argocd_application_progress(k8s_client)
+                
+                # Update our installation status with ArgoCD data
+                installation_status[component]["progress"] = argocd_progress["progress"]
+                installation_status[component]["message"] = argocd_progress["message"]
+                installation_status[component]["argocd_health"] = argocd_progress["health"]
+                installation_status[component]["argocd_sync"] = argocd_progress["sync"]
+                
+                # Update status if ArgoCD reports completion or error
+                if argocd_progress["status"] == "completed":
+                    installation_status[component]["status"] = "completed"
+                    installation_status[component]["completed_at"] = datetime.now().isoformat()
+                elif argocd_progress["status"] == "error":
+                    installation_status[component]["status"] = "error"
+                
+                return installation_status[component]
+            
+            # If no ongoing installation, check current ArgoCD status
+            argocd_progress = await get_argocd_application_progress(k8s_client)
+            
+            if argocd_progress["status"] == "completed" or (argocd_progress["health"] == "Healthy" and argocd_progress["sync"] == "Synced"):
+                return {
+                    "component": component,
+                    "status": "installed",
+                    "progress": 100,
+                    "message": "Monitoring stack is installed and healthy",
+                    "argocd_health": argocd_progress["health"],
+                    "argocd_sync": argocd_progress["sync"]
+                }
+            elif argocd_progress["status"] == "not_found":
+                return {
+                    "component": component,
+                    "status": "not_installed",
+                    "progress": 0,
+                    "message": "Monitoring stack is not installed"
+                }
+            else:
+                # ArgoCD app exists but not healthy/synced
+                return {
+                    "component": component,
+                    "status": "installing",
+                    "progress": argocd_progress["progress"],
+                    "message": argocd_progress["message"],
+                    "argocd_health": argocd_progress["health"],
+                    "argocd_sync": argocd_progress["sync"]
+                }
+        
+        # For non-monitoring components, use existing logic
         if component in installation_status:
             status_info = installation_status[component].copy()
             
             # If installation is completed, also check actual deployment status
             if status_info["status"] == "completed":
                 # Verify the component is actually installed
-                if component == "monitoring":
-                    actually_installed = await check_monitoring_argocd_status(k8s_client)
-                else:
-                    # For other components, check if namespace exists
-                    namespaces = k8s_client.list_namespace()
-                    namespace_names = [ns.metadata.name for ns in namespaces.items]
-                    actually_installed = component in namespace_names
+                namespaces = k8s_client.list_namespace()
+                namespace_names = [ns.metadata.name for ns in namespaces.items]
+                actually_installed = component in namespace_names
                 
                 if not actually_installed:
                     status_info["status"] = "error"
@@ -146,12 +218,9 @@ async def get_install_status(
             return status_info
         else:
             # No installation status, check if component is already installed
-            if component == "monitoring":
-                installed = await check_monitoring_argocd_status(k8s_client)
-            else:
-                namespaces = k8s_client.list_namespace()
-                namespace_names = [ns.metadata.name for ns in namespaces.items]
-                installed = component in namespace_names
+            namespaces = k8s_client.list_namespace()
+            namespace_names = [ns.metadata.name for ns in namespaces.items]
+            installed = component in namespace_names
             
             if installed:
                 return {
@@ -184,4 +253,133 @@ async def get_all_install_status():
     return {
         "installations": installation_status,
         "count": len(installation_status)
-    } 
+    }
+
+async def get_argocd_application_progress(k8s_client: client.CoreV1Api, app_name: str = "monitoring-stack"):
+    """
+    Get detailed progress information from ArgoCD Application
+    """
+    try:
+        custom_api = client.CustomObjectsApi()
+        
+        # Check if the Application exists
+        try:
+            app = custom_api.get_namespaced_custom_object(
+                group="argoproj.io",
+                version="v1alpha1",
+                namespace="argocd",
+                plural="applications",
+                name=app_name
+            )
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                return {
+                    "progress": 0,
+                    "status": "not_found",
+                    "message": "ArgoCD Application not found",
+                    "health": "Unknown",
+                    "sync": "Unknown"
+                }
+            else:
+                raise
+        
+        # Parse Application status
+        status = app.get("status", {})
+        health = status.get("health", {})
+        sync = status.get("sync", {})
+        operation_state = status.get("operationState", {})
+        resources = status.get("resources", [])
+        
+        health_status = health.get("status", "Unknown")
+        sync_status = sync.get("status", "Unknown")
+        operation_phase = operation_state.get("phase", "Unknown")
+        
+        # Calculate progress based on ArgoCD status
+        progress = 0
+        detailed_message = "Starting installation..."
+        
+        # Base progress on sync status
+        if sync_status == "Synced":
+            progress = 70  # Synced means resources are applied
+            detailed_message = "Application synced, waiting for health check..."
+        elif sync_status == "OutOfSync":
+            progress = 30
+            detailed_message = "Synchronizing application resources..."
+        elif operation_phase == "Running":
+            progress = 50
+            detailed_message = "Deployment in progress..."
+        elif operation_phase == "Succeeded":
+            progress = 80
+            detailed_message = "Deployment completed, checking health..."
+        
+        # Additional progress based on health status
+        if health_status == "Healthy":
+            progress = 95
+            detailed_message = "Application healthy, verifying services..."
+            
+            # Check if actual pods are running for final progress
+            try:
+                pods = k8s_client.list_namespaced_pod(namespace="monitoring")
+                running_pods = [pod for pod in pods.items if pod.status.phase == "Running"]
+                total_pods = len(pods.items)
+                
+                if total_pods > 0:
+                    pod_progress = (len(running_pods) / total_pods) * 100
+                    progress = max(progress, min(99, 90 + (pod_progress / 10)))
+                    detailed_message = f"Services ready: {len(running_pods)}/{total_pods} pods running"
+                
+                # Final check - if we have essential services running
+                if len(running_pods) >= 3:  # Prometheus, Grafana, AlertManager
+                    services = k8s_client.list_namespaced_service(namespace="monitoring")
+                    service_count = len([svc for svc in services.items if "grafana" in svc.metadata.name.lower() or "prometheus" in svc.metadata.name.lower()])
+                    
+                    if service_count >= 2:  # Grafana + Prometheus services
+                        progress = 100
+                        detailed_message = "Installation completed successfully"
+                        
+            except Exception as e:
+                logger.warning(f"Error checking pods for progress: {e}")
+        elif health_status == "Progressing":
+            progress = max(progress, 60)
+            detailed_message = "Application progressing..."
+        elif health_status == "Degraded":
+            progress = 40
+            detailed_message = "Application health degraded, retrying..."
+        
+        # Handle error states
+        if operation_phase == "Failed" or health_status == "Unknown":
+            return {
+                "progress": 0,
+                "status": "error",
+                "message": "Installation failed - check ArgoCD logs",
+                "health": health_status,
+                "sync": sync_status
+            }
+        
+        # Determine overall status
+        overall_status = "installing"
+        if progress >= 100:
+            overall_status = "completed"
+        elif health_status == "Healthy" and sync_status == "Synced":
+            overall_status = "completed"
+            progress = 100
+            detailed_message = "Installation completed successfully"
+        
+        return {
+            "progress": int(progress),
+            "status": overall_status,
+            "message": detailed_message,
+            "health": health_status,
+            "sync": sync_status,
+            "resources_count": len(resources)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting ArgoCD application progress: {e}")
+        return {
+            "progress": 0,
+            "status": "error",
+            "message": f"Error checking progress: {str(e)}",
+            "health": "Unknown",
+            "sync": "Unknown"
+        } 

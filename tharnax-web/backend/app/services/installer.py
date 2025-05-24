@@ -60,6 +60,10 @@ def create_monitoring_argocd_application(nfs_available: bool, nfs_path: Optional
                 "evaluationInterval": "30s",
                 "enableAdminAPI": True,
                 "walCompression": True
+            },
+            # Add ArgoCD annotations to handle health check issues
+            "annotations": {
+                "argocd.argoproj.io/sync-options": "SkipDryRunOnMissingResource=true",
             }
         },
         "grafana": {
@@ -182,7 +186,30 @@ def create_monitoring_argocd_application(nfs_available: bool, nfs_path: Optional
                     "ServerSideApply=true",
                     "SkipDryRunOnMissingResource=true"
                 ]
-            }
+            },
+            "ignoreDifferences": [
+                {
+                    "group": "monitoring.coreos.com",
+                    "kind": "Prometheus",
+                    "jqPathExpressions": [
+                        ".spec.remoteWrite[]?.writeRelabelConfigs[]?.action"
+                    ]
+                },
+                {
+                    "group": "admissionregistration.k8s.io",
+                    "kind": "ValidatingWebhookConfiguration",
+                    "jqPathExpressions": [
+                        ".webhooks[]?.clientConfig.caBundle"
+                    ]
+                },
+                {
+                    "group": "admissionregistration.k8s.io",
+                    "kind": "MutatingWebhookConfiguration",
+                    "jqPathExpressions": [
+                        ".webhooks[]?.clientConfig.caBundle"
+                    ]
+                }
+            ]
         }
     }
     
