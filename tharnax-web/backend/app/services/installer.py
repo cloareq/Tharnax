@@ -25,6 +25,20 @@ APP_REGISTRY = {
         "helm_release": "argocd",
         "namespace": "argocd",
         "argocd_app": None  # ArgoCD manages itself
+    },
+    "jellyfin": {
+        "name": "Jellyfin",
+        "can_uninstall": True,
+        "helm_release": "jellyfin",
+        "namespace": "jellyfin",
+        "argocd_app": "jellyfin"
+    },
+    "sonarr": {
+        "name": "Sonarr",
+        "can_uninstall": True,
+        "helm_release": "sonarr", 
+        "namespace": "sonarr",
+        "argocd_app": "sonarr"
     }
     # Future apps can be added here with their specific configurations
 }

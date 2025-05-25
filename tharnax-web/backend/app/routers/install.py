@@ -15,7 +15,7 @@ router = APIRouter(
 )
 
 # List of valid components that can be installed
-VALID_COMPONENTS = ["nfs-server", "jellyfin", "sonarr", "prometheus", "grafana", "monitoring", "argocd"]
+VALID_COMPONENTS = ["jellyfin", "sonarr", "prometheus", "grafana", "monitoring", "argocd"]
 
 # Global installation status tracking
 installation_status = {}
@@ -204,7 +204,7 @@ async def restart_app(
 
 async def install_component_with_status(component: str, config: Dict[str, Any], k8s_client: client.CoreV1Api):
     """
-    Wrapper function to track installation status for direct Helm installation
+    Wrapper function to track installation status with real-time pod progress monitoring
     """
     try:
         # Update status to installing
@@ -213,24 +213,105 @@ async def install_component_with_status(component: str, config: Dict[str, Any], 
         installation_status[component]["message"] = f"Starting installation of {component}"
         
         if component == "monitoring":
-            # Simple monitoring installation with Helm
+            # Enhanced monitoring installation with real-time progress
             installation_status[component]["progress"] = 10
             installation_status[component]["message"] = "Installing monitoring stack with Helm..."
             
-            # Perform the actual installation
-            result = await install_component(component, config, k8s_client)
+            # Start the installation in a separate task so we can monitor progress
+            install_task = asyncio.create_task(install_component(component, config, k8s_client))
+            
+            # Expected number of pods for monitoring stack
+            expected_pods = 8
+            
+            # Monitor progress while installation is running
+            while not install_task.done():
+                try:
+                    # Check current pod status
+                    pods = k8s_client.list_namespaced_pod(namespace="monitoring")
+                    if pods.items:
+                        running_pods = [pod for pod in pods.items if pod.status.phase == "Running" and 
+                                      all(container.ready for container in (pod.status.container_statuses or []))]
+                        total_pods = len(pods.items)
+                        
+                        # Calculate progress based on pod deployment
+                        if total_pods > 0:
+                            # Progress from 15% to 85% based on pod readiness
+                            pod_progress = min((len(running_pods) / expected_pods) * 70, 70)
+                            current_progress = max(15 + pod_progress, installation_status[component]["progress"])
+                            installation_status[component]["progress"] = int(current_progress)
+                            
+                            if len(running_pods) == 0 and total_pods > 0:
+                                installation_status[component]["message"] = f"Monitoring pods starting... {total_pods} pods created"
+                            elif len(running_pods) < total_pods:
+                                installation_status[component]["message"] = f"Monitoring pods starting... {len(running_pods)}/{total_pods} pods ready"
+                            else:
+                                installation_status[component]["message"] = f"Monitoring stack almost ready... {len(running_pods)} pods running"
+                        else:
+                            # Still waiting for pods to be created
+                            installation_status[component]["progress"] = 15
+                            installation_status[component]["message"] = "Waiting for monitoring pods to be created..."
+                    else:
+                        installation_status[component]["progress"] = 15
+                        installation_status[component]["message"] = "Creating monitoring namespace and resources..."
+                        
+                except Exception as pod_check_error:
+                    logger.warning(f"Error checking pod status during installation: {pod_check_error}")
+                
+                # Wait a bit before checking again
+                await asyncio.sleep(3)
+            
+            # Get the installation result
+            try:
+                result = await install_task
+            except Exception as e:
+                raise e
             
             if result:
-                installation_status[component]["status"] = "completed"
-                installation_status[component]["progress"] = 100
-                installation_status[component]["message"] = "Monitoring stack installed successfully!"
+                # Final verification of pod status
+                try:
+                    pods = k8s_client.list_namespaced_pod(namespace="monitoring")
+                    if pods.items:
+                        running_pods = [pod for pod in pods.items if pod.status.phase == "Running" and 
+                                      all(container.ready for container in (pod.status.container_statuses or []))]
+                        total_pods = len(pods.items)
+                        
+                        if len(running_pods) >= expected_pods * 0.75:  # At least 75% of expected pods
+                            installation_status[component]["status"] = "completed"
+                            installation_status[component]["progress"] = 100
+                            installation_status[component]["message"] = f"Monitoring stack installed successfully! {len(running_pods)} pods running."
+                        else:
+                            # Installation succeeded but pods not all ready yet
+                            installation_status[component]["status"] = "installing"
+                            installation_status[component]["progress"] = 90
+                            installation_status[component]["message"] = f"Installation complete, waiting for all pods... {len(running_pods)}/{total_pods} ready"
+                    else:
+                        installation_status[component]["status"] = "error"
+                        installation_status[component]["progress"] = 0
+                        installation_status[component]["message"] = "Installation completed but no pods found"
+                except Exception as final_check_error:
+                    logger.warning(f"Error in final pod check: {final_check_error}")
+                    installation_status[component]["status"] = "completed"
+                    installation_status[component]["progress"] = 100
+                    installation_status[component]["message"] = "Monitoring stack installation completed"
+                
                 logger.info(f"Monitoring installation completed successfully")
             else:
                 installation_status[component]["status"] = "error"
                 installation_status[component]["progress"] = 0
                 installation_status[component]["message"] = f"Failed to install {component}"
         else:
-            # For other components, perform the installation
+            # For other components, perform the installation with simulated progress
+            steps = ["preparing", "deploying", "configuring", "starting", "completed"]
+            
+            for i, step in enumerate(steps):
+                progress = int((i + 1) / len(steps) * 100)
+                installation_status[component]["progress"] = progress
+                installation_status[component]["message"] = f"{component}: {step}"
+                
+                if i < len(steps) - 1:  # Don't sleep on the last step
+                    await asyncio.sleep(2)
+            
+            # Perform the actual installation
             result = await install_component(component, config, k8s_client)
             
             if result:
@@ -328,16 +409,43 @@ async def get_install_status(
             if component in installation_status:
                 status_info = installation_status[component]
                 
-                # If status shows completed, verify pods are actually running
-                if status_info["status"] == "completed":
-                    try:
-                        pods = k8s_client.list_namespaced_pod(namespace="monitoring")
-                        if pods.items:
-                            running_pods = [pod for pod in pods.items if pod.status.phase == "Running" and 
-                                          all(container.ready for container in (pod.status.container_statuses or []))]
-                            total_pods = len(pods.items)
-                            
-                            if len(running_pods) >= 3:  # Main components: prometheus, grafana, alertmanager
+                # Enhanced progress tracking for monitoring
+                try:
+                    pods = k8s_client.list_namespaced_pod(namespace="monitoring")
+                    if pods.items:
+                        running_pods = [pod for pod in pods.items if pod.status.phase == "Running" and 
+                                      all(container.ready for container in (pod.status.container_statuses or []))]
+                        total_pods = len(pods.items)
+                        expected_pods = 8
+                        
+                        # If we have pods, calculate real-time progress
+                        if status_info["status"] == "installing":
+                            # Installation in progress - show live progress
+                            if total_pods == 0:
+                                # No pods yet
+                                return {
+                                    "status": "installing",
+                                    "progress": max(status_info.get("progress", 0), 15),
+                                    "message": status_info.get("message", "Creating monitoring resources..."),
+                                    "pods_running": 0,
+                                    "total_pods": 0
+                                }
+                            else:
+                                # Pods exist, calculate progress based on readiness
+                                base_progress = max(status_info.get("progress", 15), 15)
+                                pod_progress = min((len(running_pods) / expected_pods) * 70, 70)
+                                current_progress = max(base_progress, 15 + pod_progress)
+                                
+                                return {
+                                    "status": "installing",
+                                    "progress": int(current_progress),
+                                    "message": f"Monitoring pods starting... {len(running_pods)}/{total_pods} pods ready",
+                                    "pods_running": len(running_pods),
+                                    "total_pods": total_pods
+                                }
+                        elif status_info["status"] == "completed":
+                            # Installation marked complete, verify all pods are ready
+                            if len(running_pods) >= expected_pods * 0.75:
                                 return {
                                     "status": "completed",
                                     "progress": 100,
@@ -346,31 +454,39 @@ async def get_install_status(
                                     "total_pods": total_pods
                                 }
                             else:
-                                # Pods not ready yet, show progress
-                                progress = min(50 + (len(running_pods) * 6), 95)
+                                # Installation complete but not all pods ready
+                                progress = max(90, 90 + (len(running_pods) / expected_pods) * 10)
                                 return {
                                     "status": "installing",
-                                    "progress": progress,
-                                    "message": f"Monitoring services starting... {len(running_pods)}/{total_pods} pods ready",
+                                    "progress": int(progress),
+                                    "message": f"Installation complete, pods starting... {len(running_pods)}/{total_pods} ready",
                                     "pods_running": len(running_pods),
                                     "total_pods": total_pods
                                 }
                         else:
-                            # No pods yet, still installing
+                            # Other statuses (error, etc.) - return as-is but with pod info
+                            return {
+                                **status_info,
+                                "pods_running": len(running_pods),
+                                "total_pods": total_pods
+                            }
+                    else:
+                        # No pods yet during installation
+                        if status_info["status"] == "installing":
                             return {
                                 "status": "installing",
-                                "progress": 30,
-                                "message": "Helm installation in progress...",
+                                "progress": max(status_info.get("progress", 10), 10),
+                                "message": status_info.get("message", "Starting monitoring installation..."),
                                 "pods_running": 0,
                                 "total_pods": 0
                             }
-                    except Exception as pod_check_error:
-                        logger.warning(f"Error checking pod status: {pod_check_error}")
-                        # Fall back to installation status
-                        return status_info
-                
-                # Return the current installation status
-                return status_info
+                        else:
+                            return status_info
+                            
+                except Exception as pod_check_error:
+                    logger.warning(f"Error checking pod status: {pod_check_error}")
+                    # Fall back to installation status
+                    return status_info
             else:
                 # No installation status, check if component is already installed
                 try:
