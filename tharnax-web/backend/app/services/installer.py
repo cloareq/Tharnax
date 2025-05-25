@@ -412,73 +412,63 @@ async def install_jellyfin_stack(k8s_client: client.CoreV1Api):
         # First add the Helm repository to ArgoCD if not already added
         logger.info("Ensuring Jellyfin Helm repository is configured...")
         try:
-            # Check if repository exists
-            process = await asyncio.create_subprocess_exec(
-                "kubectl", "get", "secret", "-n", "argocd", "-l", "argocd.argoproj.io/secret-type=repository",
-                "--field-selector", "type=Opaque",
-                "-o", "jsonpath={.items[?(@.data.url=='aHR0cHM6Ly9qZWxseWZpbi5naXRodWIuaW8vamVsbHlmaW4taGVsbQ==')].metadata.name}",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env
-            )
-            stdout, stderr = await process.communicate()
+            import base64
             
-            if not stdout.decode().strip():
-                # Repository doesn't exist, create it
-                repo_secret = {
-                    "apiVersion": "v1",
-                    "kind": "Secret",
-                    "metadata": {
-                        "name": "jellyfin-helm-repo",
-                        "namespace": "argocd",
-                        "labels": {
-                            "argocd.argoproj.io/secret-type": "repository"
-                        }
-                    },
-                    "data": {
-                        "type": "aGVsbQ==",  # base64 of "helm"
-                        "name": "amVsbHlmaW4=",  # base64 of "jellyfin"
-                        "url": "aHR0cHM6Ly9qZWxseWZpbi5naXRodWIuaW8vamVsbHlmaW4taGVsbQ=="  # base64 of "https://jellyfin.github.io/jellyfin-helm"
-                    }
-                }
-                
-                repo_file = "/tmp/jellyfin-repo.yaml"
-                with open(repo_file, 'w') as f:
-                    yaml.dump(repo_secret, f)
-                
-                process = await asyncio.create_subprocess_exec(
-                    "kubectl", "apply", "-f", repo_file,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=env
+            # Check if repository secret exists using Kubernetes API
+            try:
+                existing_secret = k8s_client.read_namespaced_secret(
+                    name="jellyfin-helm-repo",
+                    namespace="argocd"
                 )
-                await process.communicate()
-                
-                try:
-                    os.remove(repo_file)
-                except:
-                    pass
-                    
-                logger.info("Created Jellyfin Helm repository configuration")
-            else:
                 logger.info("Jellyfin Helm repository already configured")
+            except ApiException as e:
+                if e.status == 404:
+                    # Repository doesn't exist, create it
+                    logger.info("Creating Jellyfin Helm repository configuration...")
+                    
+                    repo_secret = client.V1Secret(
+                        metadata=client.V1ObjectMeta(
+                            name="jellyfin-helm-repo",
+                            namespace="argocd",
+                            labels={
+                                "argocd.argoproj.io/secret-type": "repository"
+                            }
+                        ),
+                        data={
+                            "type": base64.b64encode("helm".encode()).decode(),
+                            "name": base64.b64encode("jellyfin".encode()).decode(),
+                            "url": base64.b64encode("https://jellyfin.github.io/jellyfin-helm".encode()).decode()
+                        }
+                    )
+                    
+                    k8s_client.create_namespaced_secret(namespace="argocd", body=repo_secret)
+                    logger.info("Created Jellyfin Helm repository configuration")
+                else:
+                    raise
                 
         except Exception as e:
             logger.warning(f"Could not configure Helm repository: {e}")
         
-        logger.info("Applying ArgoCD Application for Jellyfin...")
-        process = await asyncio.create_subprocess_exec(
-            "kubectl", "apply", "-f", app_file,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env
-        )
-        
-        stdout, stderr = await process.communicate()
-        
-        if process.returncode == 0:
+        # Create ArgoCD Application using Kubernetes API
+        logger.info("Creating ArgoCD Application for Jellyfin...")
+        try:
+            from kubernetes import client as k8s_client_custom
+            
+            # Create custom API client for ArgoCD CRDs
+            api_client = k8s_client.api_client
+            custom_api = client.CustomObjectsApi(api_client)
+            
+            # Create the ArgoCD Application
+            result = custom_api.create_namespaced_custom_object(
+                group="argoproj.io",
+                version="v1alpha1",
+                namespace="argocd",
+                plural="applications",
+                body=argocd_app
+            )
+            
             logger.info("Jellyfin ArgoCD Application created successfully")
-            logger.info(f"kubectl output: {stdout.decode()}")
+            logger.info(f"Application name: {result.get('metadata', {}).get('name', 'Unknown')}")
             
             # Clean up temporary files
             try:
@@ -488,8 +478,9 @@ async def install_jellyfin_stack(k8s_client: client.CoreV1Api):
                 pass
             
             return True
-        else:
-            logger.error(f"ArgoCD Application creation failed: {stderr.decode()}")
+            
+        except ApiException as e:
+            logger.error(f"ArgoCD Application creation failed: {e}")
             # Clean up temporary files
             try:
                 os.remove(values_file)
@@ -628,24 +619,25 @@ async def uninstall_jellyfin_stack(k8s_client: client.CoreV1Api):
     logger.info("Starting Jellyfin uninstallation")
     
     try:
-        env = os.environ.copy()
-        env["KUBERNETES_SERVICE_HOST"] = "kubernetes.default.svc.cluster.local"
-        env["KUBERNETES_SERVICE_PORT"] = "443"
-        
         logger.info("Deleting ArgoCD Application for Jellyfin...")
-        process = await asyncio.create_subprocess_exec(
-            "kubectl", "delete", "application", "jellyfin", 
-            "-n", "argocd", "--ignore-not-found=true",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env
-        )
-        stdout, stderr = await process.communicate()
-        
-        if process.returncode == 0:
+        try:
+            custom_api = client.CustomObjectsApi()
+            
+            # Delete the ArgoCD Application
+            custom_api.delete_namespaced_custom_object(
+                group="argoproj.io",
+                version="v1alpha1",
+                namespace="argocd",
+                plural="applications",
+                name="jellyfin"
+            )
             logger.info("Jellyfin ArgoCD application deleted successfully")
-        else:
-            logger.warning(f"ArgoCD application deletion warning: {stderr.decode()}")
+            
+        except ApiException as e:
+            if e.status == 404:
+                logger.info("ArgoCD application not found (already deleted)")
+            else:
+                logger.warning(f"ArgoCD application deletion warning: {e}")
         
         # Give ArgoCD time to clean up resources
         await asyncio.sleep(10)
@@ -653,24 +645,23 @@ async def uninstall_jellyfin_stack(k8s_client: client.CoreV1Api):
         # Clean up any remaining resources
         logger.info("Cleaning up remaining Jellyfin resources...")
         try:
-            process = await asyncio.create_subprocess_exec(
-                "kubectl", "delete", "pvc", "--all", "-n", "jellyfin",
-                "--ignore-not-found=true",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env
-            )
-            await process.communicate()
+            # Delete PVCs
+            pvcs = k8s_client.list_namespaced_persistent_volume_claim(namespace="jellyfin")
+            for pvc in pvcs.items:
+                try:
+                    k8s_client.delete_namespaced_persistent_volume_claim(
+                        name=pvc.metadata.name,
+                        namespace="jellyfin"
+                    )
+                except ApiException:
+                    pass
             
             # Delete the namespace (will be recreated on next install)
-            process = await asyncio.create_subprocess_exec(
-                "kubectl", "delete", "namespace", "jellyfin",
-                "--ignore-not-found=true",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env
-            )
-            await process.communicate()
+            try:
+                k8s_client.delete_namespace(name="jellyfin")
+            except ApiException as e:
+                if e.status != 404:
+                    logger.warning(f"Could not delete namespace: {e}")
             
         except Exception as e:
             logger.warning(f"Error during resource cleanup: {e}")
