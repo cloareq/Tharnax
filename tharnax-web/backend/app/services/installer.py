@@ -409,6 +409,63 @@ async def install_jellyfin_stack(k8s_client: client.CoreV1Api):
         env["KUBERNETES_SERVICE_HOST"] = "kubernetes.default.svc.cluster.local"
         env["KUBERNETES_SERVICE_PORT"] = "443"
         
+        # First add the Helm repository to ArgoCD if not already added
+        logger.info("Ensuring Jellyfin Helm repository is configured...")
+        try:
+            # Check if repository exists
+            process = await asyncio.create_subprocess_exec(
+                "kubectl", "get", "secret", "-n", "argocd", "-l", "argocd.argoproj.io/secret-type=repository",
+                "--field-selector", "type=Opaque",
+                "-o", "jsonpath={.items[?(@.data.url=='aHR0cHM6Ly9qZWxseWZpbi5naXRodWIuaW8vamVsbHlmaW4taGVsbQ==')].metadata.name}",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env
+            )
+            stdout, stderr = await process.communicate()
+            
+            if not stdout.decode().strip():
+                # Repository doesn't exist, create it
+                repo_secret = {
+                    "apiVersion": "v1",
+                    "kind": "Secret",
+                    "metadata": {
+                        "name": "jellyfin-helm-repo",
+                        "namespace": "argocd",
+                        "labels": {
+                            "argocd.argoproj.io/secret-type": "repository"
+                        }
+                    },
+                    "data": {
+                        "type": "aGVsbQ==",  # base64 of "helm"
+                        "name": "amVsbHlmaW4=",  # base64 of "jellyfin"
+                        "url": "aHR0cHM6Ly9qZWxseWZpbi5naXRodWIuaW8vamVsbHlmaW4taGVsbQ=="  # base64 of "https://jellyfin.github.io/jellyfin-helm"
+                    }
+                }
+                
+                repo_file = "/tmp/jellyfin-repo.yaml"
+                with open(repo_file, 'w') as f:
+                    yaml.dump(repo_secret, f)
+                
+                process = await asyncio.create_subprocess_exec(
+                    "kubectl", "apply", "-f", repo_file,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env
+                )
+                await process.communicate()
+                
+                try:
+                    os.remove(repo_file)
+                except:
+                    pass
+                    
+                logger.info("Created Jellyfin Helm repository configuration")
+            else:
+                logger.info("Jellyfin Helm repository already configured")
+                
+        except Exception as e:
+            logger.warning(f"Could not configure Helm repository: {e}")
+        
         logger.info("Applying ArgoCD Application for Jellyfin...")
         process = await asyncio.create_subprocess_exec(
             "kubectl", "apply", "-f", app_file,
