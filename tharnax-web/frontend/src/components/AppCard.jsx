@@ -283,13 +283,28 @@ const AppCard = ({ app = {} }) => {
                     }, 1000);
                     return;
                 } else if (statusData.status === 'error') {
-                    setStatus('error');
-                    setInstalling(false);
-                    setUninstalling(false);
-                    setRestarting(false);
-                    setInstallMessage(statusData.message || 'Operation failed');
-                    console.error(`[${id}] Operation error:`, statusData);
-                    return;
+                    // Special handling for temporary errors during installation
+                    const isTemporaryError = statusData.message &&
+                        (statusData.message.includes('no pods found') ||
+                            statusData.message.includes('pods starting') ||
+                            statusData.message.includes('waiting for'));
+
+                    if (isTemporaryError && attempts < 30) { // Allow up to 90 seconds for temporary errors
+                        setInstallMessage(statusData.message || 'Installation in progress...');
+                        console.log(`[${id}] Temporary error, continuing polling:`, statusData.message);
+                        // Keep the installing state for temporary errors
+                        setStatus('installing');
+                        setInstalling(true);
+                        // Continue polling for temporary errors
+                    } else {
+                        setStatus('error');
+                        setInstalling(false);
+                        setUninstalling(false);
+                        setRestarting(false);
+                        setInstallMessage(statusData.message || 'Operation failed');
+                        console.error(`[${id}] Operation error:`, statusData);
+                        return;
+                    }
                 } else if (statusData.status === 'installing' || statusData.status === 'not_found') {
                     // Keep polling for 'installing' status or if ArgoCD app not found yet
                     setStatus('installing');
