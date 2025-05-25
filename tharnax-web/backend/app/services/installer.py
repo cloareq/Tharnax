@@ -476,43 +476,47 @@ async def restart_component(component: str, config: Optional[Dict[str, Any]], k8
         
         namespace = app_config.get("namespace", component)
         
-        # Set environment for kubectl commands
-        env = os.environ.copy()
-        env["KUBERNETES_SERVICE_HOST"] = "kubernetes.default.svc.cluster.local"
-        env["KUBERNETES_SERVICE_PORT"] = "443"
+        # Use Kubernetes Python client for rollout restart
+        apps_v1 = client.AppsV1Api()
         
         if component == "monitoring":
             # Restart monitoring stack deployments
             logger.info("Restarting monitoring stack deployments...")
             
             # Get all deployments in monitoring namespace
-            apps_v1 = client.AppsV1Api()
             deployments = apps_v1.list_namespaced_deployment(namespace=namespace)
             
             if not deployments.items:
                 logger.warning(f"No deployments found in {namespace} namespace")
                 return False
             
-            # Restart each deployment using kubectl rollout restart
+            # Restart each deployment by updating annotations
             for deployment in deployments.items:
                 deployment_name = deployment.metadata.name
                 logger.info(f"Restarting deployment: {deployment_name}")
                 
-                process = await asyncio.create_subprocess_exec(
-                    "kubectl", "rollout", "restart", 
-                    f"deployment/{deployment_name}",
-                    "-n", namespace,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=env
-                )
-                
-                stdout, stderr = await process.communicate()
-                
-                if process.returncode == 0:
-                    logger.info(f"Successfully restarted {deployment_name}")
-                else:
-                    logger.warning(f"Failed to restart {deployment_name}: {stderr.decode()}")
+                try:
+                    # Trigger rollout restart by updating restart annotation
+                    from datetime import datetime
+                    restart_annotation = {
+                        "kubectl.kubernetes.io/restartedAt": datetime.now().isoformat()
+                    }
+                    
+                    # Update deployment annotations to trigger restart
+                    deployment.spec.template.metadata.annotations = deployment.spec.template.metadata.annotations or {}
+                    deployment.spec.template.metadata.annotations.update(restart_annotation)
+                    
+                    # Apply the update
+                    apps_v1.patch_namespaced_deployment(
+                        name=deployment_name,
+                        namespace=namespace,
+                        body=deployment
+                    )
+                    
+                    logger.info(f"Successfully triggered restart for {deployment_name}")
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to restart {deployment_name}: {e}")
             
             # Also restart any StatefulSets (like Prometheus and AlertManager)
             statefulsets = apps_v1.list_namespaced_stateful_set(namespace=namespace)
@@ -520,59 +524,88 @@ async def restart_component(component: str, config: Optional[Dict[str, Any]], k8
                 sts_name = sts.metadata.name
                 logger.info(f"Restarting StatefulSet: {sts_name}")
                 
-                process = await asyncio.create_subprocess_exec(
-                    "kubectl", "rollout", "restart", 
-                    f"statefulset/{sts_name}",
-                    "-n", namespace,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=env
-                )
-                
-                stdout, stderr = await process.communicate()
-                
-                if process.returncode == 0:
-                    logger.info(f"Successfully restarted StatefulSet {sts_name}")
-                else:
-                    logger.warning(f"Failed to restart StatefulSet {sts_name}: {stderr.decode()}")
+                try:
+                    from datetime import datetime
+                    restart_annotation = {
+                        "kubectl.kubernetes.io/restartedAt": datetime.now().isoformat()
+                    }
+                    
+                    # Update StatefulSet annotations to trigger restart
+                    sts.spec.template.metadata.annotations = sts.spec.template.metadata.annotations or {}
+                    sts.spec.template.metadata.annotations.update(restart_annotation)
+                    
+                    # Apply the update
+                    apps_v1.patch_namespaced_stateful_set(
+                        name=sts_name,
+                        namespace=namespace,
+                        body=sts
+                    )
+                    
+                    logger.info(f"Successfully triggered restart for StatefulSet {sts_name}")
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to restart StatefulSet {sts_name}: {e}")
                     
         else:
             # Generic restart for other components
             logger.info(f"Restarting {component} deployments...")
             
-            # Restart all deployments in the component's namespace
-            process = await asyncio.create_subprocess_exec(
-                "kubectl", "rollout", "restart", 
-                "deployment", "--all",
-                "-n", namespace,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env
-            )
+            # Get all deployments in the component's namespace
+            deployments = apps_v1.list_namespaced_deployment(namespace=namespace)
             
-            stdout, stderr = await process.communicate()
-            
-            if process.returncode == 0:
-                logger.info(f"Successfully restarted deployments in {namespace}")
-            else:
-                logger.warning(f"Failed to restart deployments in {namespace}: {stderr.decode()}")
+            for deployment in deployments.items:
+                deployment_name = deployment.metadata.name
+                logger.info(f"Restarting deployment: {deployment_name}")
+                
+                try:
+                    from datetime import datetime
+                    restart_annotation = {
+                        "kubectl.kubernetes.io/restartedAt": datetime.now().isoformat()
+                    }
+                    
+                    # Update deployment annotations to trigger restart
+                    deployment.spec.template.metadata.annotations = deployment.spec.template.metadata.annotations or {}
+                    deployment.spec.template.metadata.annotations.update(restart_annotation)
+                    
+                    # Apply the update
+                    apps_v1.patch_namespaced_deployment(
+                        name=deployment_name,
+                        namespace=namespace,
+                        body=deployment
+                    )
+                    
+                    logger.info(f"Successfully triggered restart for {deployment_name}")
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to restart {deployment_name}: {e}")
             
             # Also restart StatefulSets if any
-            process = await asyncio.create_subprocess_exec(
-                "kubectl", "rollout", "restart", 
-                "statefulset", "--all",
-                "-n", namespace,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env
-            )
-            
-            stdout, stderr = await process.communicate()
-            
-            if process.returncode == 0:
-                logger.info(f"Successfully restarted StatefulSets in {namespace}")
-            else:
-                logger.warning(f"No StatefulSets to restart in {namespace} or restart failed: {stderr.decode()}")
+            statefulsets = apps_v1.list_namespaced_stateful_set(namespace=namespace)
+            for sts in statefulsets.items:
+                sts_name = sts.metadata.name
+                logger.info(f"Restarting StatefulSet: {sts_name}")
+                
+                try:
+                    from datetime import datetime
+                    restart_annotation = {
+                        "kubectl.kubernetes.io/restartedAt": datetime.now().isoformat()
+                    }
+                    
+                    # Update StatefulSet annotations to trigger restart
+                    sts.spec.template.metadata.annotations = sts.spec.template.metadata.annotations or {}
+                    sts.spec.template.metadata.annotations.update(restart_annotation)
+                    
+                    # Apply the update
+                    apps_v1.patch_namespaced_stateful_set(
+                        name=sts_name,
+                        namespace=namespace,
+                        body=sts
+                    )
+                    
+                    logger.info(f"Successfully triggered restart for StatefulSet {sts_name}")
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to restart StatefulSet {sts_name}: {e}")
         
         logger.info(f"Successfully restarted {component}")
         return True
