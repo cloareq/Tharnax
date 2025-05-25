@@ -66,11 +66,37 @@ const AppCatalog = () => {
         ? apps.filter(app => selectedCategory === 'all' || app.category === selectedCategory)
         : [];
 
+    // Group apps by installation status
+    const installedApps = filteredApps.filter(app => app.installed);
+    const availableApps = filteredApps.filter(app => !app.installed);
+
+    // Get category counts for display
+    const getCategoryCounts = (category) => {
+        const categoryApps = category === 'all'
+            ? apps
+            : apps.filter(app => app.category === category);
+        const installed = categoryApps.filter(app => app.installed).length;
+        const total = categoryApps.length;
+        return { installed, available: total - installed, total };
+    };
+
     return (
         <div>
             <div className="mb-6">
                 <h1 className="text-2xl font-bold text-tharnax-text">Application Catalog</h1>
                 <p className="text-gray-400">Install and manage applications for your cluster</p>
+
+                {/* Summary Stats */}
+                <div className="mt-4 flex gap-4 text-sm">
+                    <div className="flex items-center">
+                        <div className="w-2 h-2 bg-green-500 rounded-full mr-2"></div>
+                        <span className="text-green-400">{apps.filter(app => app.installed).length} Installed</span>
+                    </div>
+                    <div className="flex items-center">
+                        <div className="w-2 h-2 bg-gray-500 rounded-full mr-2"></div>
+                        <span className="text-gray-400">{apps.filter(app => !app.installed).length} Available</span>
+                    </div>
+                </div>
             </div>
 
             {error && (
@@ -82,18 +108,39 @@ const AppCatalog = () => {
 
             {/* Category filters */}
             <div className="mb-6 flex flex-wrap gap-2">
-                {filterOptions.map(category => (
-                    <button
-                        key={category}
-                        onClick={() => setSelectedCategory(category)}
-                        className={`px-4 py-2 rounded-full text-sm font-medium ${selectedCategory === category
-                            ? 'bg-tharnax-accent text-white'
-                            : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                            }`}
-                    >
-                        {category.charAt(0).toUpperCase() + category.slice(1)}
-                    </button>
-                ))}
+                {filterOptions.map(category => {
+                    const counts = getCategoryCounts(category);
+                    return (
+                        <button
+                            key={category}
+                            onClick={() => setSelectedCategory(category)}
+                            className={`px-4 py-2 rounded-full text-sm font-medium flex items-center gap-2 ${selectedCategory === category
+                                ? 'bg-tharnax-accent text-white'
+                                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                                }`}
+                        >
+                            <span>{category.charAt(0).toUpperCase() + category.slice(1)}</span>
+                            <div className="flex items-center gap-1 text-xs">
+                                {counts.installed > 0 && (
+                                    <span className={`px-1.5 py-0.5 rounded-full ${selectedCategory === category
+                                        ? 'bg-green-400 text-green-900'
+                                        : 'bg-green-600 text-green-100'
+                                        }`}>
+                                        {counts.installed}
+                                    </span>
+                                )}
+                                {counts.available > 0 && (
+                                    <span className={`px-1.5 py-0.5 rounded-full ${selectedCategory === category
+                                        ? 'bg-gray-300 text-gray-700'
+                                        : 'bg-gray-600 text-gray-300'
+                                        }`}>
+                                        {counts.available}
+                                    </span>
+                                )}
+                            </div>
+                        </button>
+                    );
+                })}
             </div>
 
             {loading ? (
@@ -102,13 +149,50 @@ const AppCatalog = () => {
                     <p className="mt-3 text-gray-400">Loading applications...</p>
                 </div>
             ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {filteredApps && filteredApps.length > 0 ? (
-                        filteredApps.map(app => (
-                            <AppCard key={app.id} app={app} />
-                        ))
-                    ) : (
-                        <div className="text-center py-12 col-span-2 bg-tharnax-primary rounded-lg">
+                <div className="space-y-8">
+                    {/* Installed Applications Section */}
+                    {installedApps.length > 0 && (
+                        <div>
+                            <div className="flex items-center mb-4">
+                                <h2 className="text-xl font-semibold text-white flex items-center">
+                                    <div className="w-3 h-3 bg-green-500 rounded-full mr-3 animate-pulse"></div>
+                                    Installed Applications
+                                </h2>
+                                <div className="ml-3 px-2 py-1 bg-green-700 text-green-100 text-xs font-medium rounded-full">
+                                    {installedApps.length} active
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                {installedApps.map(app => (
+                                    <AppCard key={app.id} app={app} />
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Available Applications Section */}
+                    {availableApps.length > 0 && (
+                        <div>
+                            <div className="flex items-center mb-4">
+                                <h2 className="text-xl font-semibold text-gray-300 flex items-center">
+                                    <div className="w-3 h-3 bg-gray-500 rounded-full mr-3"></div>
+                                    Available Applications
+                                </h2>
+                                <div className="ml-3 px-2 py-1 bg-gray-700 text-gray-300 text-xs font-medium rounded-full">
+                                    {availableApps.length} available
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                {availableApps.map(app => (
+                                    <AppCard key={app.id} app={app} />
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* No applications found */}
+                    {filteredApps.length === 0 && (
+                        <div className="text-center py-12 bg-tharnax-primary rounded-lg">
                             <p className="text-gray-400">No applications found in this category</p>
                         </div>
                     )}

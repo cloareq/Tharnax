@@ -406,19 +406,60 @@ const AppCard = ({ app = {} }) => {
     const hasUrl = url && !hasUrls;
     const isInstalled = status === 'installed' || installed;
 
+    // Get card styling based on installation status
+    const getCardStyling = () => {
+        if (isInstalled) {
+            return {
+                containerClass: "relative bg-tharnax-primary rounded-lg shadow-md p-5 border-2 border-green-500/30 bg-gradient-to-br from-tharnax-primary to-green-900/20",
+                titleClass: "text-lg font-medium text-white",
+                descriptionClass: "mt-1 text-sm text-gray-300"
+            };
+        } else {
+            return {
+                containerClass: "relative bg-tharnax-primary rounded-lg shadow-md p-5 border border-gray-600/50 opacity-75 hover:opacity-100 transition-opacity",
+                titleClass: "text-lg font-medium text-tharnax-text",
+                descriptionClass: "mt-1 text-sm text-gray-400"
+            };
+        }
+    };
+
+    const cardStyling = getCardStyling();
+
     return (
-        <div className="bg-tharnax-primary rounded-lg shadow-md p-5">
-            <div className="flex justify-between items-start">
+        <div className={cardStyling.containerClass}>
+            {/* Status Badge */}
+            {isInstalled && (
+                <div className="absolute -top-2 -right-2 bg-green-500 text-white text-xs font-bold px-2 py-1 rounded-full shadow-lg">
+                    INSTALLED
+                </div>
+            )}
+
+            <div className="flex justify-between items-start relative">
                 <div className="flex-1">
                     <div className="flex items-center">
-                        <h3 className="text-lg font-medium text-tharnax-text">
+                        <h3 className={cardStyling.titleClass}>
                             {name}
                         </h3>
                         <div className="ml-2">{getStatusIcon()}</div>
+                        {/* Additional status indicators */}
+                        {isInstalled && (
+                            <div className="ml-2 flex items-center">
+                                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                                <span className="ml-1 text-xs text-green-400 font-medium">Active</span>
+                            </div>
+                        )}
                     </div>
-                    <p className="mt-1 text-sm text-gray-400">{description}</p>
-                    <div className="mt-2 inline-block px-2 py-1 text-xs font-medium rounded-full bg-gray-700">
-                        {category}
+                    <p className={cardStyling.descriptionClass}>{description}</p>
+                    <div className="mt-2 flex items-center gap-2">
+                        <div className={`inline-block px-2 py-1 text-xs font-medium rounded-full ${isInstalled ? 'bg-green-700 text-green-100' : 'bg-gray-700 text-gray-300'
+                            }`}>
+                            {category}
+                        </div>
+                        {isInstalled && (
+                            <div className="inline-block px-2 py-1 text-xs font-medium rounded-full bg-blue-700 text-blue-100">
+                                Running
+                            </div>
+                        )}
                     </div>
 
                     {/* Installation progress */}
@@ -445,7 +486,7 @@ const AppCard = ({ app = {} }) => {
                                 <button
                                     key={serviceName}
                                     onClick={() => handleUrlClick(serviceUrl)}
-                                    className="flex items-center px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+                                    className="flex items-center px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors shadow-md"
                                 >
                                     <span className="capitalize">{serviceName}</span>
                                     <ExternalLinkIcon className="ml-1 h-3 w-3" />
@@ -459,7 +500,7 @@ const AppCard = ({ app = {} }) => {
                         <div className="mt-3">
                             <button
                                 onClick={() => handleUrlClick(url)}
-                                className="flex items-center px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+                                className="flex items-center px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors shadow-md"
                             >
                                 Open
                                 <ExternalLinkIcon className="ml-1 h-3 w-3" />
