@@ -30,12 +30,10 @@ async def install_app(
     """
     Trigger installation of a specific component
     """
-    # Check if component is valid
     if component not in VALID_COMPONENTS:
         logger.warning(f"Requested installation of unknown component: {component}")
         raise HTTPException(status_code=404, detail=f"Component '{component}' not found")
     
-    # Check if component is already being installed
     if component in installation_status and installation_status[component]["status"] == "installing":
         logger.info(f"Component '{component}' is already being installed")
         return {
@@ -46,7 +44,6 @@ async def install_app(
     
     logger.info(f"Starting installation of '{component}'")
     
-    # Initialize installation status
     installation_status[component] = {
         "status": "installing",
         "progress": 0,
@@ -55,7 +52,6 @@ async def install_app(
         "component": component
     }
     
-    # Start installation in background
     background_tasks.add_task(
         install_component_with_status,
         component,
@@ -79,19 +75,16 @@ async def uninstall_app(
     """
     Trigger uninstallation of a specific component
     """
-    # Check if component is valid
     if component not in VALID_COMPONENTS:
         logger.warning(f"Requested uninstallation of unknown component: {component}")
         raise HTTPException(status_code=404, detail=f"Component '{component}' not found")
     
-    # Check if component can be uninstalled
     if not can_uninstall_component(component):
         app_config = get_app_config(component)
         app_name = app_config["name"] if app_config else component
         logger.warning(f"Attempted to uninstall protected component: {component}")
         raise HTTPException(status_code=403, detail=f"{app_name} cannot be uninstalled as it's a protected system component")
     
-    # Check if component is already being processed
     if component in installation_status and installation_status[component]["status"] in ["installing", "uninstalling", "restarting"]:
         logger.info(f"Component '{component}' is already being processed")
         return {
@@ -102,7 +95,6 @@ async def uninstall_app(
     
     logger.info(f"Starting uninstallation of '{component}'")
     
-    # Initialize uninstallation status
     installation_status[component] = {
         "status": "uninstalling",
         "progress": 0,
@@ -111,7 +103,6 @@ async def uninstall_app(
         "component": component
     }
     
-    # Start uninstallation in background
     background_tasks.add_task(
         uninstall_component_with_status,
         component,
@@ -135,24 +126,20 @@ async def restart_app(
     """
     Trigger restart (rollout restart) of a specific component's deployments
     """
-    # Check if component is valid
     if component not in VALID_COMPONENTS:
         logger.warning(f"Requested restart of unknown component: {component}")
         raise HTTPException(status_code=404, detail=f"Component '{component}' not found")
     
-    # Check if component can be restarted (same as uninstall permission)
     if not can_uninstall_component(component):
         app_config = get_app_config(component)
         app_name = app_config["name"] if app_config else component
         logger.warning(f"Attempted to restart protected component: {component}")
         raise HTTPException(status_code=403, detail=f"{app_name} cannot be restarted as it's a protected system component")
     
-    # Check if component is actually installed first
     app_config = get_app_config(component)
     namespace = app_config.get("namespace", component) if app_config else component
     
     try:
-        # Check if the namespace exists and has running pods
         pods = k8s_client.list_namespaced_pod(namespace=namespace)
         if not pods.items:
             raise HTTPException(status_code=400, detail=f"{component} is not installed - cannot restart")
@@ -167,7 +154,6 @@ async def restart_app(
         else:
             raise HTTPException(status_code=500, detail=f"Error checking {component} status")
     
-    # Check if component is already being processed
     if component in installation_status and installation_status[component]["status"] in ["installing", "uninstalling", "restarting"]:
         logger.info(f"Component '{component}' is already being processed")
         return {
@@ -178,7 +164,6 @@ async def restart_app(
     
     logger.info(f"Starting restart of '{component}'")
     
-    # Initialize restart status
     installation_status[component] = {
         "status": "restarting",
         "progress": 0,
@@ -187,7 +172,6 @@ async def restart_app(
         "component": component
     }
     
-    # Start restart in background
     background_tasks.add_task(
         restart_component_with_status,
         component,
@@ -207,35 +191,27 @@ async def install_component_with_status(component: str, config: Dict[str, Any], 
     Wrapper function to track installation status with real-time pod progress monitoring
     """
     try:
-        # Update status to installing
         installation_status[component]["status"] = "installing"
         installation_status[component]["progress"] = 5
         installation_status[component]["message"] = f"Starting installation of {component}"
         
         if component == "monitoring":
-            # Enhanced monitoring installation with real-time progress
             installation_status[component]["progress"] = 10
             installation_status[component]["message"] = "Installing monitoring stack with Helm..."
             
-            # Start the installation in a separate task so we can monitor progress
             install_task = asyncio.create_task(install_component(component, config, k8s_client))
             
-            # Expected number of pods for monitoring stack
             expected_pods = 8
             
-            # Monitor progress while installation is running
             while not install_task.done():
                 try:
-                    # Check current pod status
                     pods = k8s_client.list_namespaced_pod(namespace="monitoring")
                     if pods.items:
                         running_pods = [pod for pod in pods.items if pod.status.phase == "Running" and 
                                       all(container.ready for container in (pod.status.container_statuses or []))]
                         total_pods = len(pods.items)
                         
-                        # Calculate progress based on pod deployment
                         if total_pods > 0:
-                            # Progress from 15% to 85% based on pod readiness
                             pod_progress = min((len(running_pods) / expected_pods) * 70, 70)
                             current_progress = max(15 + pod_progress, installation_status[component]["progress"])
                             installation_status[component]["progress"] = int(current_progress)
@@ -247,7 +223,6 @@ async def install_component_with_status(component: str, config: Dict[str, Any], 
                             else:
                                 installation_status[component]["message"] = f"Monitoring stack almost ready... {len(running_pods)} pods running"
                         else:
-                            # Still waiting for pods to be created
                             installation_status[component]["progress"] = 15
                             installation_status[component]["message"] = "Waiting for monitoring pods to be created..."
                     else:
@@ -257,17 +232,14 @@ async def install_component_with_status(component: str, config: Dict[str, Any], 
                 except Exception as pod_check_error:
                     logger.warning(f"Error checking pod status during installation: {pod_check_error}")
                 
-                # Wait a bit before checking again
                 await asyncio.sleep(3)
             
-            # Get the installation result
             try:
                 result = await install_task
             except Exception as e:
                 raise e
             
             if result:
-                # Final verification of pod status
                 try:
                     pods = k8s_client.list_namespaced_pod(namespace="monitoring")
                     if pods.items:
@@ -520,7 +492,6 @@ async def get_install_status(
     """
     Get installation status for a specific component (simplified without ArgoCD)
     """
-    # Check if component is valid
     if component not in VALID_COMPONENTS:
         logger.warning(f"Requested status for unknown component: {component}")
         raise HTTPException(status_code=404, detail=f"Component '{component}' not found")

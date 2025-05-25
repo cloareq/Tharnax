@@ -10,7 +10,6 @@ from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# App configuration registry for managing different applications
 APP_REGISTRY = {
     "monitoring": {
         "name": "Monitoring Stack",
@@ -21,10 +20,10 @@ APP_REGISTRY = {
     },
     "argocd": {
         "name": "ArgoCD",
-        "can_uninstall": False,  # Protected - cannot be uninstalled
+        "can_uninstall": False,
         "helm_release": "argocd",
         "namespace": "argocd",
-        "argocd_app": None  # ArgoCD manages itself
+        "argocd_app": None
     },
     "jellyfin": {
         "name": "Jellyfin",
@@ -40,7 +39,6 @@ APP_REGISTRY = {
         "namespace": "sonarr",
         "argocd_app": "sonarr"
     }
-    # Future apps can be added here with their specific configurations
 }
 
 def get_app_config(component: str) -> Optional[Dict[str, Any]]:
@@ -60,7 +58,6 @@ def detect_nfs_storage():
         # Check common NFS paths that might be mounted or accessible
         nfs_paths = []
         
-        # First check /etc/exports if accessible
         if os.path.exists('/etc/exports'):
             try:
                 with open('/etc/exports', 'r') as f:
@@ -72,8 +69,6 @@ def detect_nfs_storage():
                                 nfs_paths.append(path)
             except Exception:
                 pass
-        
-        # Check common mount points
         common_paths = ['/mnt/tharnax-nfs', '/mnt/nfs', '/srv/nfs', '/data', '/nfs']
         for path in common_paths:
             if os.path.exists(path) and os.path.isdir(path):
@@ -89,8 +84,6 @@ def create_monitoring_helm_values(nfs_available: bool, nfs_path: Optional[str] =
     """
     Create Helm values for the monitoring stack (simplified, no ArgoCD complexity)
     """
-    
-    # Simple Helm values without ArgoCD annotations
     helm_values = {
         "prometheus": {
             "prometheusSpec": {
@@ -133,10 +126,8 @@ def create_monitoring_helm_values(nfs_available: bool, nfs_path: Optional[str] =
         }
     }
     
-    # Configure storage based on NFS availability
     if nfs_available and nfs_path:
         logger.info(f"Configuring monitoring stack with NFS storage: {nfs_path}")
-        # Configure PVC for Prometheus with NFS
         helm_values["prometheus"]["prometheusSpec"]["storageSpec"] = {
             "volumeClaimTemplate": {
                 "spec": {
@@ -150,10 +141,7 @@ def create_monitoring_helm_values(nfs_available: bool, nfs_path: Optional[str] =
             }
         }
         
-        # Configure PVC for Grafana with NFS
         helm_values["grafana"]["persistence"]["accessModes"] = ["ReadWriteMany"]
-        
-        # Configure PVC for AlertManager with NFS
         helm_values["alertmanager"]["alertmanagerSpec"]["storage"] = {
             "volumeClaimTemplate": {
                 "spec": {
@@ -168,7 +156,6 @@ def create_monitoring_helm_values(nfs_available: bool, nfs_path: Optional[str] =
         }
     else:
         logger.info("Configuring monitoring stack with default storage")
-        # Use default storage class
         helm_values["prometheus"]["prometheusSpec"]["storageSpec"] = {
             "volumeClaimTemplate": {
                 "spec": {
@@ -191,7 +178,6 @@ async def install_monitoring_stack(k8s_client: client.CoreV1Api):
     logger.info("Starting monitoring stack installation with direct Helm")
     
     try:
-        # Step 1: Create monitoring namespace
         try:
             namespace = client.V1Namespace(
                 metadata=client.V1ObjectMeta(name="monitoring")
@@ -204,24 +190,17 @@ async def install_monitoring_stack(k8s_client: client.CoreV1Api):
             else:
                 raise
         
-        # Step 2: Detect NFS storage
         nfs_available, nfs_path = detect_nfs_storage()
         logger.info(f"NFS storage detection: available={nfs_available}, path={nfs_path}")
         
-        # Step 3: Create Helm values
         helm_values = create_monitoring_helm_values(nfs_available, nfs_path)
-        
-        # Step 4: Save values to temporary file
         values_file = "/tmp/monitoring-values.yaml"
         with open(values_file, 'w') as f:
             yaml.dump(helm_values, f)
         
         logger.info("Created Helm values file")
         
-        # Step 5: Add Prometheus Community Helm repository
         logger.info("Adding Prometheus Community Helm repository...")
-        
-        # Set environment for in-cluster access
         env = os.environ.copy()
         env["KUBERNETES_SERVICE_HOST"] = "kubernetes.default.svc.cluster.local"
         env["KUBERNETES_SERVICE_PORT"] = "443"
@@ -237,7 +216,6 @@ async def install_monitoring_stack(k8s_client: client.CoreV1Api):
         if process.returncode != 0:
             logger.warning(f"Helm repo add warning: {stderr.decode()}")
         
-        # Update repositories
         logger.info("Updating Helm repositories...")
         process = await asyncio.create_subprocess_exec(
             "helm", "repo", "update",
@@ -246,8 +224,6 @@ async def install_monitoring_stack(k8s_client: client.CoreV1Api):
             env=env
         )
         await process.communicate()
-        
-        # Step 6: Install monitoring stack with Helm
         logger.info("Installing monitoring stack with Helm...")
         process = await asyncio.create_subprocess_exec(
             "helm", "install", "monitoring-stack", 
@@ -266,7 +242,6 @@ async def install_monitoring_stack(k8s_client: client.CoreV1Api):
             logger.info("Monitoring stack installed successfully with Helm")
             logger.info(f"Helm output: {stdout.decode()}")
             
-            # Clean up values file
             try:
                 os.remove(values_file)
             except:
@@ -275,7 +250,6 @@ async def install_monitoring_stack(k8s_client: client.CoreV1Api):
             return True
         else:
             logger.error(f"Helm installation failed: {stderr.decode()}")
-            # Clean up values file
             try:
                 os.remove(values_file)
             except:
@@ -284,7 +258,6 @@ async def install_monitoring_stack(k8s_client: client.CoreV1Api):
         
     except Exception as e:
         logger.error(f"Error installing monitoring stack: {e}")
-        # Clean up values file
         try:
             os.remove("/tmp/monitoring-values.yaml")
         except:
@@ -301,8 +274,6 @@ async def install_component(component: str, config: Optional[Dict[str, Any]], k8
         if component == "monitoring":
             return await install_monitoring_stack(k8s_client)
         else:
-            # Legacy installation for other components with async support
-            # Create namespace for the component
             try:
                 namespace = client.V1Namespace(
                     metadata=client.V1ObjectMeta(
@@ -312,18 +283,15 @@ async def install_component(component: str, config: Optional[Dict[str, Any]], k8
                 k8s_client.create_namespace(namespace)
                 logger.info(f"Created namespace {component}")
             except client.rest.ApiException as e:
-                if e.status != 409:  # Ignore if namespace already exists
+                if e.status != 409:
                     logger.error(f"Error creating namespace: {e}")
                     raise
-            
-            # Simulate installation steps with delays (using async sleep)
             steps = ["preparing", "deploying", "configuring", "starting", "completed"]
             
             for i, step in enumerate(steps):
                 logger.info(f"{component}: {step}")
-                await asyncio.sleep(2)  # Use async sleep to not block other installations
+                await asyncio.sleep(2)
                 
-                # Calculate progress percentage
                 progress = int((i + 1) / len(steps) * 100)
                 logger.info(f"{component} installation progress: {progress}%")
             
@@ -340,12 +308,9 @@ async def uninstall_monitoring_stack(k8s_client: client.CoreV1Api):
     logger.info("Starting monitoring stack uninstallation")
     
     try:
-        # Set environment for in-cluster access
         env = os.environ.copy()
         env["KUBERNETES_SERVICE_HOST"] = "kubernetes.default.svc.cluster.local"
         env["KUBERNETES_SERVICE_PORT"] = "443"
-        
-        # Step 1: Delete ArgoCD Application if it exists
         try:
             logger.info("Attempting to delete ArgoCD application...")
             process = await asyncio.create_subprocess_exec(
@@ -362,8 +327,6 @@ async def uninstall_monitoring_stack(k8s_client: client.CoreV1Api):
                 logger.warning(f"ArgoCD application deletion warning: {stderr.decode()}")
         except Exception as e:
             logger.warning(f"Could not delete ArgoCD application: {e}")
-        
-        # Step 2: Uninstall Helm release
         logger.info("Uninstalling Helm release...")
         process = await asyncio.create_subprocess_exec(
             "helm", "uninstall", "monitoring-stack", 
@@ -381,10 +344,8 @@ async def uninstall_monitoring_stack(k8s_client: client.CoreV1Api):
         else:
             logger.warning(f"Helm uninstall warning: {stderr.decode()}")
         
-        # Step 3: Clean up PVCs and other resources
         logger.info("Cleaning up persistent resources...")
         try:
-            # Delete PVCs in monitoring namespace
             process = await asyncio.create_subprocess_exec(
                 "kubectl", "delete", "pvc", "--all", "-n", "monitoring",
                 "--ignore-not-found=true",
@@ -393,8 +354,6 @@ async def uninstall_monitoring_stack(k8s_client: client.CoreV1Api):
                 env=env
             )
             await process.communicate()
-            
-            # Delete any remaining monitoring resources
             process = await asyncio.create_subprocess_exec(
                 "kubectl", "delete", "prometheus,alertmanager,servicemonitor,prometheusrule",
                 "--all", "-n", "monitoring", "--ignore-not-found=true",
@@ -407,11 +366,7 @@ async def uninstall_monitoring_stack(k8s_client: client.CoreV1Api):
         except Exception as e:
             logger.warning(f"Error during resource cleanup: {e}")
         
-        # Step 4: Wait a bit for resources to be cleaned up
         await asyncio.sleep(5)
-        
-        # Step 5: Optionally delete the namespace (but leave it for potential reinstall)
-        # We'll keep the namespace to avoid issues with service accounts, etc.
         
         logger.info("Monitoring stack uninstalled successfully")
         return True
@@ -426,7 +381,6 @@ async def uninstall_component(component: str, k8s_client: client.CoreV1Api):
     """
     logger.info(f"Starting uninstallation of {component}")
     
-    # Check if component can be uninstalled
     if not can_uninstall_component(component):
         app_config = get_app_config(component)
         app_name = app_config["name"] if app_config else component
@@ -436,7 +390,6 @@ async def uninstall_component(component: str, k8s_client: client.CoreV1Api):
         if component == "monitoring":
             return await uninstall_monitoring_stack(k8s_client)
         else:
-            # Generic uninstall for other components
             app_config = get_app_config(component)
             if not app_config:
                 raise ValueError(f"Unknown component: {component}")
@@ -444,8 +397,6 @@ async def uninstall_component(component: str, k8s_client: client.CoreV1Api):
             env = os.environ.copy()
             env["KUBERNETES_SERVICE_HOST"] = "kubernetes.default.svc.cluster.local"
             env["KUBERNETES_SERVICE_PORT"] = "443"
-            
-            # Delete ArgoCD application if specified
             if app_config.get("argocd_app"):
                 try:
                     process = await asyncio.create_subprocess_exec(
@@ -458,8 +409,6 @@ async def uninstall_component(component: str, k8s_client: client.CoreV1Api):
                     await process.communicate()
                 except Exception as e:
                     logger.warning(f"Could not delete ArgoCD application for {component}: {e}")
-            
-            # Uninstall Helm release if specified
             if app_config.get("helm_release"):
                 process = await asyncio.create_subprocess_exec(
                     "helm", "uninstall", app_config["helm_release"], 
@@ -490,33 +439,24 @@ async def restart_component(component: str, config: Optional[Dict[str, Any]], k8
         
         namespace = app_config.get("namespace", component)
         
-        # Use Kubernetes Python client for rollout restart
         apps_v1 = client.AppsV1Api()
         
         if component == "monitoring":
-            # Restart monitoring stack deployments
             logger.info("Restarting monitoring stack deployments...")
-            
-            # Get all deployments in monitoring namespace
             deployments = apps_v1.list_namespaced_deployment(namespace=namespace)
             
             if not deployments.items:
                 logger.warning(f"No deployments found in {namespace} namespace")
                 return False
-            
-            # Restart each deployment by updating annotations
             for deployment in deployments.items:
                 deployment_name = deployment.metadata.name
                 logger.info(f"Restarting deployment: {deployment_name}")
                 
                 try:
-                    # Trigger rollout restart by updating restart annotation
                     from datetime import datetime
                     restart_annotation = {
                         "kubectl.kubernetes.io/restartedAt": datetime.now().isoformat()
                     }
-                    
-                    # Update deployment annotations to trigger restart
                     deployment.spec.template.metadata.annotations = deployment.spec.template.metadata.annotations or {}
                     deployment.spec.template.metadata.annotations.update(restart_annotation)
                     
@@ -532,7 +472,7 @@ async def restart_component(component: str, config: Optional[Dict[str, Any]], k8
                 except Exception as e:
                     logger.warning(f"Failed to restart {deployment_name}: {e}")
             
-            # Also restart any StatefulSets (like Prometheus and AlertManager)
+
             statefulsets = apps_v1.list_namespaced_stateful_set(namespace=namespace)
             for sts in statefulsets.items:
                 sts_name = sts.metadata.name
@@ -561,10 +501,7 @@ async def restart_component(component: str, config: Optional[Dict[str, Any]], k8
                     logger.warning(f"Failed to restart StatefulSet {sts_name}: {e}")
                     
         else:
-            # Generic restart for other components
             logger.info(f"Restarting {component} deployments...")
-            
-            # Get all deployments in the component's namespace
             deployments = apps_v1.list_namespaced_deployment(namespace=namespace)
             
             for deployment in deployments.items:
@@ -593,7 +530,7 @@ async def restart_component(component: str, config: Optional[Dict[str, Any]], k8
                 except Exception as e:
                     logger.warning(f"Failed to restart {deployment_name}: {e}")
             
-            # Also restart StatefulSets if any
+
             statefulsets = apps_v1.list_namespaced_stateful_set(namespace=namespace)
             for sts in statefulsets.items:
                 sts_name = sts.metadata.name
