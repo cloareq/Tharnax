@@ -660,12 +660,23 @@ async def get_install_status(
                                     "total_pods": 0
                                 }
                         else:
-                            # Other statuses (error, etc.) - return as-is but with pod info
-                            return {
-                                **status_info,
-                                "pods_running": len(running_pods),
-                                "total_pods": total_pods
-                            }
+                            # Other statuses (error, etc.) - but check if pods are actually running
+                            if status_info["status"] == "error" and len(running_pods) >= expected_pods * 0.75:
+                                # Error status but pods are running - installation actually succeeded
+                                return {
+                                    "status": "completed",
+                                    "progress": 100,
+                                    "message": f"Monitoring stack deployed successfully! {len(running_pods)} pods running.",
+                                    "pods_running": len(running_pods),
+                                    "total_pods": total_pods
+                                }
+                            else:
+                                # Other statuses - return as-is but with pod info
+                                return {
+                                    **status_info,
+                                    "pods_running": len(running_pods),
+                                    "total_pods": total_pods
+                                }
                     else:
                         # No pods yet during installation
                         if status_info["status"] == "installing":
@@ -769,12 +780,23 @@ async def get_install_status(
                                     "total_pods": total_pods
                                 }
                         else:
-                            # Other statuses (error, etc.) - return as-is but with pod info
-                            return {
-                                **status_info,
-                                "pods_running": len(running_pods),
-                                "total_pods": total_pods
-                            }
+                            # Other statuses (error, etc.) - but check if pods are actually running
+                            if status_info["status"] == "error" and len(running_pods) >= expected_pods:
+                                # Error status but pods are running - installation actually succeeded
+                                return {
+                                    "status": "completed",
+                                    "progress": 100,
+                                    "message": f"Jellyfin deployed successfully! {len(running_pods)} pods running.",
+                                    "pods_running": len(running_pods),
+                                    "total_pods": total_pods
+                                }
+                            else:
+                                # Other statuses - return as-is but with pod info
+                                return {
+                                    **status_info,
+                                    "pods_running": len(running_pods),
+                                    "total_pods": total_pods
+                                }
                     else:
                         # No pods yet during installation
                         if status_info["status"] == "installing":
