@@ -360,26 +360,151 @@ async def uninstall_component_with_status(component: str, k8s_client: client.Cor
 
 async def restart_component_with_status(component: str, config: Dict[str, Any], k8s_client: client.CoreV1Api):
     """
-    Wrapper function to track restart status
+    Wrapper function to track restart status with real-time pod progress monitoring
     """
     try:
         # Update status to restarting
         installation_status[component]["status"] = "restarting"
-        installation_status[component]["progress"] = 20
-        installation_status[component]["message"] = f"Performing rollout restart of {component}..."
+        installation_status[component]["progress"] = 10
+        installation_status[component]["message"] = f"Starting rollout restart of {component}..."
         
-        # Perform the restart (rollout restart of deployments)
-        result = await restart_component(component, config, k8s_client)
-        
-        if result:
-            installation_status[component]["status"] = "completed"
-            installation_status[component]["progress"] = 100
-            installation_status[component]["message"] = f"{component} restarted successfully!"
-            logger.info(f"{component} restart completed successfully")
+        if component == "monitoring":
+            # Enhanced monitoring restart with real-time progress
+            installation_status[component]["progress"] = 15
+            installation_status[component]["message"] = "Triggering rollout restart of monitoring components..."
+            
+            # Get initial pod state before restart
+            try:
+                initial_pods = k8s_client.list_namespaced_pod(namespace="monitoring")
+                expected_pods = len(initial_pods.items) if initial_pods.items else 8
+                initial_pod_uids = {pod.metadata.uid for pod in initial_pods.items}
+            except Exception as e:
+                logger.warning(f"Could not get initial pod state: {e}")
+                expected_pods = 8
+                initial_pod_uids = set()
+            
+            # Start the restart in a separate task so we can monitor progress
+            restart_task = asyncio.create_task(restart_component(component, config, k8s_client))
+            
+            # Wait a moment for restart to be triggered
+            await asyncio.sleep(2)
+            installation_status[component]["progress"] = 20
+            installation_status[component]["message"] = "Rollout restart triggered, monitoring pod recreation..."
+            
+            # Monitor progress while restart is happening
+            restart_started = False
+            max_wait_time = 180  # 3 minutes max
+            wait_time = 0
+            
+            while not restart_task.done() and wait_time < max_wait_time:
+                try:
+                    # Check current pod status
+                    pods = k8s_client.list_namespaced_pod(namespace="monitoring")
+                    if pods.items:
+                        current_pod_uids = {pod.metadata.uid for pod in pods.items}
+                        running_pods = [pod for pod in pods.items if pod.status.phase == "Running" and 
+                                      all(container.ready for container in (pod.status.container_statuses or []))]
+                        total_pods = len(pods.items)
+                        
+                        # Check if restart has started (new pods with different UIDs)
+                        new_pods = current_pod_uids - initial_pod_uids
+                        if new_pods or len(current_pod_uids) < len(initial_pod_uids):
+                            restart_started = True
+                        
+                        if restart_started:
+                            # Calculate progress based on pod readiness after restart
+                            if total_pods > 0:
+                                # Progress from 25% to 90% based on pod readiness
+                                pod_progress = min((len(running_pods) / expected_pods) * 65, 65)
+                                current_progress = max(25 + pod_progress, installation_status[component]["progress"])
+                                installation_status[component]["progress"] = int(current_progress)
+                                
+                                if len(running_pods) == 0:
+                                    installation_status[component]["message"] = f"Restarting pods... {total_pods} pods recreated"
+                                elif len(running_pods) < expected_pods:
+                                    installation_status[component]["message"] = f"Pods restarting... {len(running_pods)}/{total_pods} pods ready"
+                                else:
+                                    installation_status[component]["message"] = f"Restart almost complete... {len(running_pods)} pods running"
+                            else:
+                                installation_status[component]["progress"] = 30
+                                installation_status[component]["message"] = "Pods being recreated..."
+                        else:
+                            # Still waiting for restart to begin
+                            installation_status[component]["progress"] = 20
+                            installation_status[component]["message"] = "Waiting for pod restart to begin..."
+                    else:
+                        installation_status[component]["progress"] = 25
+                        installation_status[component]["message"] = "Pods being recreated..."
+                        
+                except Exception as pod_check_error:
+                    logger.warning(f"Error checking pod status during restart: {pod_check_error}")
+                
+                # Wait a bit before checking again
+                await asyncio.sleep(3)
+                wait_time += 3
+            
+            # Get the restart result
+            try:
+                result = await restart_task
+            except Exception as e:
+                raise e
+            
+            if result:
+                # Final verification of pod status
+                try:
+                    pods = k8s_client.list_namespaced_pod(namespace="monitoring")
+                    if pods.items:
+                        running_pods = [pod for pod in pods.items if pod.status.phase == "Running" and 
+                                      all(container.ready for container in (pod.status.container_statuses or []))]
+                        total_pods = len(pods.items)
+                        
+                        if len(running_pods) >= expected_pods * 0.75:  # At least 75% of expected pods
+                            installation_status[component]["status"] = "completed"
+                            installation_status[component]["progress"] = 100
+                            installation_status[component]["message"] = f"Restart completed successfully! {len(running_pods)} pods running."
+                        else:
+                            # Restart succeeded but pods not all ready yet
+                            installation_status[component]["status"] = "restarting"
+                            installation_status[component]["progress"] = 95
+                            installation_status[component]["message"] = f"Restart complete, finalizing... {len(running_pods)}/{total_pods} ready"
+                    else:
+                        installation_status[component]["status"] = "error"
+                        installation_status[component]["progress"] = 0
+                        installation_status[component]["message"] = "Restart completed but no pods found"
+                except Exception as final_check_error:
+                    logger.warning(f"Error in final pod check: {final_check_error}")
+                    installation_status[component]["status"] = "completed"
+                    installation_status[component]["progress"] = 100
+                    installation_status[component]["message"] = "Restart completed"
+                
+                logger.info(f"Monitoring restart completed successfully")
+            else:
+                installation_status[component]["status"] = "error"
+                installation_status[component]["progress"] = 0
+                installation_status[component]["message"] = f"Failed to restart {component}"
         else:
-            installation_status[component]["status"] = "error"
-            installation_status[component]["progress"] = 0
-            installation_status[component]["message"] = f"Failed to restart {component}"
+            # For other components, perform restart with simulated progress
+            steps = ["triggering restart", "recreating pods", "waiting for readiness", "completed"]
+            
+            for i, step in enumerate(steps):
+                progress = int(20 + (i / len(steps)) * 80)  # 20% to 100%
+                installation_status[component]["progress"] = progress
+                installation_status[component]["message"] = f"{component}: {step}"
+                
+                if i < len(steps) - 1:  # Don't sleep on the last step
+                    await asyncio.sleep(3)
+            
+            # Perform the actual restart
+            result = await restart_component(component, config, k8s_client)
+            
+            if result:
+                installation_status[component]["status"] = "completed"
+                installation_status[component]["progress"] = 100
+                installation_status[component]["message"] = f"{component} restarted successfully!"
+            else:
+                installation_status[component]["status"] = "error"
+                installation_status[component]["progress"] = 0
+                installation_status[component]["message"] = f"Failed to restart {component}"
     
     except Exception as e:
         logger.error(f"Error restarting {component}: {str(e)}")
@@ -462,6 +587,30 @@ async def get_install_status(
                                     "message": f"Installation complete, pods starting... {len(running_pods)}/{total_pods} ready",
                                     "pods_running": len(running_pods),
                                     "total_pods": total_pods
+                                }
+                        elif status_info["status"] == "restarting":
+                            # Restart in progress - show live restart progress
+                            base_progress = max(status_info.get("progress", 20), 20)
+                            
+                            if total_pods > 0:
+                                # Calculate restart progress based on pod readiness
+                                pod_progress = min((len(running_pods) / expected_pods) * 65, 65)
+                                current_progress = max(base_progress, 25 + pod_progress)
+                                
+                                return {
+                                    "status": "restarting", 
+                                    "progress": int(current_progress),
+                                    "message": f"Restarting pods... {len(running_pods)}/{total_pods} pods ready",
+                                    "pods_running": len(running_pods),
+                                    "total_pods": total_pods
+                                }
+                            else:
+                                return {
+                                    "status": "restarting",
+                                    "progress": base_progress,
+                                    "message": status_info.get("message", "Pods being recreated..."),
+                                    "pods_running": 0,
+                                    "total_pods": 0
                                 }
                         else:
                             # Other statuses (error, etc.) - return as-is but with pod info
