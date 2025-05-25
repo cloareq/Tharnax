@@ -133,19 +133,39 @@ async def restart_app(
     k8s_client: client.CoreV1Api = Depends(get_k8s_client)
 ):
     """
-    Trigger restart (uninstall + install) of a specific component
+    Trigger restart (rollout restart) of a specific component's deployments
     """
     # Check if component is valid
     if component not in VALID_COMPONENTS:
         logger.warning(f"Requested restart of unknown component: {component}")
         raise HTTPException(status_code=404, detail=f"Component '{component}' not found")
     
-    # Check if component can be uninstalled (needed for restart)
+    # Check if component can be restarted (same as uninstall permission)
     if not can_uninstall_component(component):
         app_config = get_app_config(component)
         app_name = app_config["name"] if app_config else component
         logger.warning(f"Attempted to restart protected component: {component}")
         raise HTTPException(status_code=403, detail=f"{app_name} cannot be restarted as it's a protected system component")
+    
+    # Check if component is actually installed first
+    app_config = get_app_config(component)
+    namespace = app_config.get("namespace", component) if app_config else component
+    
+    try:
+        # Check if the namespace exists and has running pods
+        pods = k8s_client.list_namespaced_pod(namespace=namespace)
+        if not pods.items:
+            raise HTTPException(status_code=400, detail=f"{component} is not installed - cannot restart")
+        
+        running_pods = [pod for pod in pods.items if pod.status.phase == "Running"]
+        if len(running_pods) == 0:
+            raise HTTPException(status_code=400, detail=f"{component} has no running pods - cannot restart")
+            
+    except client.exceptions.ApiException as e:
+        if e.status == 404:
+            raise HTTPException(status_code=400, detail=f"{component} is not installed - cannot restart")
+        else:
+            raise HTTPException(status_code=500, detail=f"Error checking {component} status")
     
     # Check if component is already being processed
     if component in installation_status and installation_status[component]["status"] in ["installing", "uninstalling", "restarting"]:
@@ -162,7 +182,7 @@ async def restart_app(
     installation_status[component] = {
         "status": "restarting",
         "progress": 0,
-        "message": f"Starting restart of {component}",
+        "message": f"Starting rollout restart of {component}",
         "started_at": datetime.now().isoformat(),
         "component": component
     }
@@ -177,7 +197,7 @@ async def restart_app(
     
     return {
         "status": "started",
-        "message": f"Restart of {component} started",
+        "message": f"Rollout restart of {component} started",
         "component": component,
         "progress": 0
     }
@@ -262,12 +282,12 @@ async def restart_component_with_status(component: str, config: Dict[str, Any], 
     Wrapper function to track restart status
     """
     try:
-        # Update status to restarting - uninstall phase
+        # Update status to restarting
         installation_status[component]["status"] = "restarting"
-        installation_status[component]["progress"] = 10
-        installation_status[component]["message"] = f"Restarting {component} - uninstalling..."
+        installation_status[component]["progress"] = 20
+        installation_status[component]["message"] = f"Performing rollout restart of {component}..."
         
-        # Perform the restart (uninstall + install)
+        # Perform the restart (rollout restart of deployments)
         result = await restart_component(component, config, k8s_client)
         
         if result:

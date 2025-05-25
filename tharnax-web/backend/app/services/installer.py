@@ -465,30 +465,118 @@ async def uninstall_component(component: str, k8s_client: client.CoreV1Api):
 
 async def restart_component(component: str, config: Optional[Dict[str, Any]], k8s_client: client.CoreV1Api):
     """
-    Restart a component by uninstalling and then reinstalling it
+    Restart a component by performing a rollout restart of its deployments
     """
-    logger.info(f"Starting restart of {component}")
+    logger.info(f"Starting rollout restart of {component}")
     
     try:
-        # Step 1: Uninstall the component
-        logger.info(f"Uninstalling {component}...")
-        await uninstall_component(component, k8s_client)
+        app_config = get_app_config(component)
+        if not app_config:
+            raise ValueError(f"Unknown component: {component}")
         
-        # Step 2: Wait a bit for cleanup
-        logger.info("Waiting for cleanup to complete...")
-        await asyncio.sleep(10)
+        namespace = app_config.get("namespace", component)
         
-        # Step 3: Reinstall the component
-        logger.info(f"Reinstalling {component}...")
-        result = await install_component(component, config, k8s_client)
+        # Set environment for kubectl commands
+        env = os.environ.copy()
+        env["KUBERNETES_SERVICE_HOST"] = "kubernetes.default.svc.cluster.local"
+        env["KUBERNETES_SERVICE_PORT"] = "443"
         
-        if result:
-            logger.info(f"Successfully restarted {component}")
-            return True
-        else:
-            logger.error(f"Failed to reinstall {component} after uninstall")
-            return False
+        if component == "monitoring":
+            # Restart monitoring stack deployments
+            logger.info("Restarting monitoring stack deployments...")
             
+            # Get all deployments in monitoring namespace
+            apps_v1 = client.AppsV1Api()
+            deployments = apps_v1.list_namespaced_deployment(namespace=namespace)
+            
+            if not deployments.items:
+                logger.warning(f"No deployments found in {namespace} namespace")
+                return False
+            
+            # Restart each deployment using kubectl rollout restart
+            for deployment in deployments.items:
+                deployment_name = deployment.metadata.name
+                logger.info(f"Restarting deployment: {deployment_name}")
+                
+                process = await asyncio.create_subprocess_exec(
+                    "kubectl", "rollout", "restart", 
+                    f"deployment/{deployment_name}",
+                    "-n", namespace,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env
+                )
+                
+                stdout, stderr = await process.communicate()
+                
+                if process.returncode == 0:
+                    logger.info(f"Successfully restarted {deployment_name}")
+                else:
+                    logger.warning(f"Failed to restart {deployment_name}: {stderr.decode()}")
+            
+            # Also restart any StatefulSets (like Prometheus and AlertManager)
+            statefulsets = apps_v1.list_namespaced_stateful_set(namespace=namespace)
+            for sts in statefulsets.items:
+                sts_name = sts.metadata.name
+                logger.info(f"Restarting StatefulSet: {sts_name}")
+                
+                process = await asyncio.create_subprocess_exec(
+                    "kubectl", "rollout", "restart", 
+                    f"statefulset/{sts_name}",
+                    "-n", namespace,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env
+                )
+                
+                stdout, stderr = await process.communicate()
+                
+                if process.returncode == 0:
+                    logger.info(f"Successfully restarted StatefulSet {sts_name}")
+                else:
+                    logger.warning(f"Failed to restart StatefulSet {sts_name}: {stderr.decode()}")
+                    
+        else:
+            # Generic restart for other components
+            logger.info(f"Restarting {component} deployments...")
+            
+            # Restart all deployments in the component's namespace
+            process = await asyncio.create_subprocess_exec(
+                "kubectl", "rollout", "restart", 
+                "deployment", "--all",
+                "-n", namespace,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env
+            )
+            
+            stdout, stderr = await process.communicate()
+            
+            if process.returncode == 0:
+                logger.info(f"Successfully restarted deployments in {namespace}")
+            else:
+                logger.warning(f"Failed to restart deployments in {namespace}: {stderr.decode()}")
+            
+            # Also restart StatefulSets if any
+            process = await asyncio.create_subprocess_exec(
+                "kubectl", "rollout", "restart", 
+                "statefulset", "--all",
+                "-n", namespace,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env
+            )
+            
+            stdout, stderr = await process.communicate()
+            
+            if process.returncode == 0:
+                logger.info(f"Successfully restarted StatefulSets in {namespace}")
+            else:
+                logger.warning(f"No StatefulSets to restart in {namespace} or restart failed: {stderr.decode()}")
+        
+        logger.info(f"Successfully restarted {component}")
+        return True
+        
     except Exception as e:
         logger.error(f"Error restarting {component}: {e}")
         raise 

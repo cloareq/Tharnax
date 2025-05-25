@@ -177,8 +177,8 @@ const AppCard = ({ app = {} }) => {
     };
 
     const handleRestart = async () => {
-        // Prevent multiple operations
-        if (installing || uninstalling || restarting) {
+        // Prevent multiple operations and ensure app is installed
+        if (installing || uninstalling || restarting || !isInstalled) {
             return;
         }
 
@@ -186,9 +186,9 @@ const AppCard = ({ app = {} }) => {
             setRestarting(true);
             setStatus('restarting');
             setProgress(5);
-            setInstallMessage('Starting restart...');
+            setInstallMessage('Starting rollout restart...');
 
-            console.log(`[${id}] Starting restart...`);
+            console.log(`[${id}] Starting rollout restart...`);
 
             const response = await apiClient.post(`/install/${id}/restart`);
 
@@ -200,8 +200,8 @@ const AppCard = ({ app = {} }) => {
                 startPolling();
                 return;
             } else if (response.data.status === 'started') {
-                setProgress(15);
-                setInstallMessage('Restart initiated successfully');
+                setProgress(20);
+                setInstallMessage('Rollout restart initiated successfully');
                 startPolling();
                 return;
             } else if (response.data.status === 'error') {
@@ -215,7 +215,7 @@ const AppCard = ({ app = {} }) => {
 
             // Default case - start polling anyway
             setProgress(10);
-            setInstallMessage('Restart request submitted');
+            setInstallMessage('Rollout restart request submitted');
             startPolling();
 
         } catch (error) {
@@ -225,7 +225,9 @@ const AppCard = ({ app = {} }) => {
             setProgress(0);
 
             if (error.response) {
-                if (error.response.status === 403) {
+                if (error.response.status === 400) {
+                    setInstallMessage('App must be installed to restart');
+                } else if (error.response.status === 403) {
                     setInstallMessage('Cannot restart protected component');
                 } else if (error.response.status === 404) {
                     setInstallMessage('Restart service not available');
@@ -493,8 +495,8 @@ const AppCard = ({ app = {} }) => {
                             onClick={handleUninstall}
                             disabled={installing || uninstalling || restarting}
                             className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${installing || uninstalling || restarting
-                                    ? 'bg-gray-600 text-gray-400 cursor-wait'
-                                    : 'bg-red-600 text-white hover:bg-red-700'
+                                ? 'bg-gray-600 text-gray-400 cursor-wait'
+                                : 'bg-red-600 text-white hover:bg-red-700'
                                 }`}
                         >
                             {uninstalling ? 'Uninstalling...' : 'Uninstall'}
@@ -507,8 +509,8 @@ const AppCard = ({ app = {} }) => {
                             onClick={handleRestart}
                             disabled={installing || uninstalling || restarting}
                             className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${installing || uninstalling || restarting
-                                    ? 'bg-gray-600 text-gray-400 cursor-wait'
-                                    : 'bg-orange-600 text-white hover:bg-orange-700'
+                                ? 'bg-gray-600 text-gray-400 cursor-wait'
+                                : 'bg-orange-600 text-white hover:bg-orange-700'
                                 }`}
                         >
                             {restarting ? 'Restarting...' : 'Restart'}
