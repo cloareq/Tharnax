@@ -254,11 +254,10 @@ const AppCard = ({ app = {} }) => {
 
                 console.log(`[${id}] Status polling response:`, statusData); // Debug logging
 
-                setProgress(statusData.progress || 0);
-                setInstallMessage(statusData.message || 'Installing...');
-
                 // Handle different status values from the new ArgoCD integration
                 if (statusData.status === 'completed' || statusData.status === 'installed') {
+                    setProgress(statusData.progress || 100);
+                    setInstallMessage(statusData.message || 'Installation completed');
                     setStatus('installed');
                     setInstalling(false);
                     setUninstalling(false);
@@ -295,12 +294,15 @@ const AppCard = ({ app = {} }) => {
                         // Keep the installing state for temporary errors
                         setStatus('installing');
                         setInstalling(true);
+                        // For temporary errors, maintain progress at 85% (installation complete, waiting for pods)
+                        setProgress(Math.max(progress, 85));
                         // Continue polling for temporary errors
                     } else {
                         setStatus('error');
                         setInstalling(false);
                         setUninstalling(false);
                         setRestarting(false);
+                        setProgress(statusData.progress || 0);
                         setInstallMessage(statusData.message || 'Operation failed');
                         console.error(`[${id}] Operation error:`, statusData);
                         return;
@@ -311,6 +313,8 @@ const AppCard = ({ app = {} }) => {
                     setInstalling(true);
                     setUninstalling(false);
                     setRestarting(false);
+                    setProgress(statusData.progress || 0);
+                    setInstallMessage(statusData.message || 'Installing...');
                     // For monitoring, show more detailed status if available
                     if (id === 'monitoring' && statusData.argocd_health && statusData.argocd_sync) {
                         setInstallMessage(`${statusData.message} (Health: ${statusData.argocd_health}, Sync: ${statusData.argocd_sync})`);
@@ -320,11 +324,15 @@ const AppCard = ({ app = {} }) => {
                     setInstalling(false);
                     setUninstalling(true);
                     setRestarting(false);
+                    setProgress(statusData.progress || 0);
+                    setInstallMessage(statusData.message || 'Uninstalling...');
                 } else if (statusData.status === 'restarting') {
                     setStatus('restarting');
                     setInstalling(false);
                     setUninstalling(false);
                     setRestarting(true);
+                    setProgress(statusData.progress || 0);
+                    setInstallMessage(statusData.message || 'Restarting...');
                 } else {
                     // For unknown statuses, try to infer the operation state
                     if (uninstalling) {
