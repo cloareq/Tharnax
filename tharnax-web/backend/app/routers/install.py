@@ -271,6 +271,82 @@ async def install_component_with_status(component: str, config: Dict[str, Any], 
                 installation_status[component]["status"] = "error"
                 installation_status[component]["progress"] = 0
                 installation_status[component]["message"] = f"Failed to install {component}"
+        elif component == "jellyfin":
+            installation_status[component]["progress"] = 10
+            installation_status[component]["message"] = "Creating Jellyfin ArgoCD application..."
+            
+            install_task = asyncio.create_task(install_component(component, config, k8s_client))
+            
+            expected_pods = 1  # Jellyfin typically runs as a single pod
+            
+            while not install_task.done():
+                try:
+                    pods = k8s_client.list_namespaced_pod(namespace="jellyfin")
+                    if pods.items:
+                        running_pods = [pod for pod in pods.items if pod.status.phase == "Running" and 
+                                      all(container.ready for container in (pod.status.container_statuses or []))]
+                        total_pods = len(pods.items)
+                        
+                        if total_pods > 0:
+                            pod_progress = min((len(running_pods) / expected_pods) * 70, 70)
+                            current_progress = max(15 + pod_progress, installation_status[component]["progress"])
+                            installation_status[component]["progress"] = int(current_progress)
+                            
+                            if len(running_pods) == 0 and total_pods > 0:
+                                installation_status[component]["message"] = f"Jellyfin pod starting... {total_pods} pods created"
+                            elif len(running_pods) < total_pods:
+                                installation_status[component]["message"] = f"Jellyfin pod starting... {len(running_pods)}/{total_pods} pods ready"
+                            else:
+                                installation_status[component]["message"] = f"Jellyfin almost ready... {len(running_pods)} pods running"
+                        else:
+                            installation_status[component]["progress"] = 15
+                            installation_status[component]["message"] = "Waiting for Jellyfin pod to be created..."
+                    else:
+                        installation_status[component]["progress"] = 15
+                        installation_status[component]["message"] = "Creating Jellyfin namespace and resources..."
+                        
+                except Exception as pod_check_error:
+                    logger.warning(f"Error checking pod status during installation: {pod_check_error}")
+                
+                await asyncio.sleep(3)
+            
+            try:
+                result = await install_task
+            except Exception as e:
+                raise e
+            
+            if result:
+                try:
+                    pods = k8s_client.list_namespaced_pod(namespace="jellyfin")
+                    if pods.items:
+                        running_pods = [pod for pod in pods.items if pod.status.phase == "Running" and 
+                                      all(container.ready for container in (pod.status.container_statuses or []))]
+                        total_pods = len(pods.items)
+                        
+                        if len(running_pods) >= expected_pods * 0.75:  # At least 75% of expected pods
+                            installation_status[component]["status"] = "completed"
+                            installation_status[component]["progress"] = 100
+                            installation_status[component]["message"] = f"Jellyfin installed successfully! {len(running_pods)} pods running."
+                        else:
+                            # Installation succeeded but pods not all ready yet
+                            installation_status[component]["status"] = "installing"
+                            installation_status[component]["progress"] = 90
+                            installation_status[component]["message"] = f"Installation complete, waiting for pod... {len(running_pods)}/{total_pods} ready"
+                    else:
+                        installation_status[component]["status"] = "error"
+                        installation_status[component]["progress"] = 0
+                        installation_status[component]["message"] = "Installation completed but no pods found"
+                except Exception as final_check_error:
+                    logger.warning(f"Error in final pod check: {final_check_error}")
+                    installation_status[component]["status"] = "completed"
+                    installation_status[component]["progress"] = 100
+                    installation_status[component]["message"] = "Jellyfin installation completed"
+                
+                logger.info(f"Jellyfin installation completed successfully")
+            else:
+                installation_status[component]["status"] = "error"
+                installation_status[component]["progress"] = 0
+                installation_status[component]["message"] = f"Failed to install {component}"
         else:
             # For other components, perform the installation with simulated progress
             steps = ["preparing", "deploying", "configuring", "starting", "completed"]
@@ -499,7 +575,7 @@ async def get_install_status(
     logger.info(f"Checking installation status for '{component}'")
     
     try:
-        # Special handling for monitoring component
+        # Special handling for monitoring and jellyfin components
         if component == "monitoring":
             # Check if we have an existing installation status
             if component in installation_status:
@@ -633,8 +709,117 @@ async def get_install_status(
                     "progress": 0,
                     "message": f"{component} is not installed"
                 }
+        elif component == "jellyfin":
+            # Check if we have an existing installation status
+            if component in installation_status:
+                status_info = installation_status[component]
+                
+                # Enhanced progress tracking for Jellyfin
+                try:
+                    pods = k8s_client.list_namespaced_pod(namespace="jellyfin")
+                    if pods.items:
+                        running_pods = [pod for pod in pods.items if pod.status.phase == "Running" and 
+                                      all(container.ready for container in (pod.status.container_statuses or []))]
+                        total_pods = len(pods.items)
+                        expected_pods = 1
+                        
+                        # If we have pods, calculate real-time progress
+                        if status_info["status"] == "installing":
+                            # Installation in progress - show live progress
+                            if total_pods == 0:
+                                # No pods yet
+                                return {
+                                    "status": "installing",
+                                    "progress": max(status_info.get("progress", 0), 15),
+                                    "message": status_info.get("message", "Creating Jellyfin resources..."),
+                                    "pods_running": 0,
+                                    "total_pods": 0
+                                }
+                            else:
+                                # Pods exist, calculate progress based on readiness
+                                base_progress = max(status_info.get("progress", 15), 15)
+                                pod_progress = min((len(running_pods) / expected_pods) * 70, 70)
+                                current_progress = max(base_progress, 15 + pod_progress)
+                                
+                                return {
+                                    "status": "installing",
+                                    "progress": int(current_progress),
+                                    "message": f"Jellyfin pod starting... {len(running_pods)}/{total_pods} pods ready",
+                                    "pods_running": len(running_pods),
+                                    "total_pods": total_pods
+                                }
+                        elif status_info["status"] == "completed":
+                            # Installation marked complete, verify pod is ready
+                            if len(running_pods) >= expected_pods:
+                                return {
+                                    "status": "completed",
+                                    "progress": 100,
+                                    "message": f"Jellyfin deployed successfully! {len(running_pods)} pods running.",
+                                    "pods_running": len(running_pods),
+                                    "total_pods": total_pods
+                                }
+                            else:
+                                # Installation complete but pod not ready
+                                progress = max(90, 90 + (len(running_pods) / expected_pods) * 10)
+                                return {
+                                    "status": "installing",
+                                    "progress": int(progress),
+                                    "message": f"Installation complete, pod starting... {len(running_pods)}/{total_pods} ready",
+                                    "pods_running": len(running_pods),
+                                    "total_pods": total_pods
+                                }
+                        else:
+                            # Other statuses (error, etc.) - return as-is but with pod info
+                            return {
+                                **status_info,
+                                "pods_running": len(running_pods),
+                                "total_pods": total_pods
+                            }
+                    else:
+                        # No pods yet during installation
+                        if status_info["status"] == "installing":
+                            return {
+                                "status": "installing",
+                                "progress": max(status_info.get("progress", 10), 10),
+                                "message": status_info.get("message", "Starting Jellyfin installation..."),
+                                "pods_running": 0,
+                                "total_pods": 0
+                            }
+                        else:
+                            return status_info
+                            
+                except Exception as pod_check_error:
+                    logger.warning(f"Error checking pod status: {pod_check_error}")
+                    # Fall back to installation status
+                    return status_info
+            else:
+                # No installation status, check if component is already installed
+                try:
+                    # Check if Jellyfin namespace exists and has running pods
+                    pods = k8s_client.list_namespaced_pod(namespace="jellyfin")
+                    if pods.items:
+                        running_pods = [pod for pod in pods.items if pod.status.phase == "Running" and 
+                                      all(container.ready for container in (pod.status.container_statuses or []))]
+                        if len(running_pods) >= 1:
+                            return {
+                                "component": component,
+                                "status": "installed",
+                                "progress": 100,
+                                "message": f"Jellyfin is already installed ({len(running_pods)} pods running)",
+                                "pods_running": len(running_pods),
+                                "total_pods": len(pods.items)
+                            }
+                except:
+                    pass
+                
+                return {
+                    "component": component,
+                    "status": "not_installed",
+                    "progress": 0,
+                    "message": f"{component} is not installed"
+                }
         
-        # For non-monitoring components, use existing logic
+        # For non-monitoring/jellyfin components, use existing logic
         if component in installation_status:
             status_info = installation_status[component].copy()
             

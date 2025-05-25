@@ -1,0 +1,38 @@
+image:
+  repository: jellyfin/jellyfin
+  tag: "latest"
+  pullPolicy: Always
+
+service:
+  type: LoadBalancer
+  port: 8096
+  annotations: {}
+
+persistence:
+  config:
+    enabled: true
+    size: 2Gi
+    storageClass: ""
+    accessMode: ReadWriteOnce
+  media:
+    enabled: true
+    size: 100Gi
+    storageClass: ""
+    # Will be set to ReadWriteMany if NFS is available, ReadWriteOnce otherwise
+    accessMode: ReadWriteOnce
+
+resources:
+  requests:
+    memory: "512Mi"
+    cpu: "250m"
+  limits:
+    memory: "2Gi"
+    cpu: "2000m"
+
+env:
+  TZ: "UTC"
+  JELLYFIN_PublishedServerUrl: ""
+
+nodeSelector: {}
+tolerations: []
+affinity: {} 

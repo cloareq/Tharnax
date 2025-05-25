@@ -1,0 +1,71 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: jellyfin
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://jellyfin.github.io/jellyfin-helm
+    chart: jellyfin
+    targetRevision: "*"
+    helm:
+      valueFiles:
+        - values.yaml
+      values: |
+        image:
+          repository: jellyfin/jellyfin
+          tag: "latest"
+          pullPolicy: Always
+        
+        service:
+          type: LoadBalancer
+          port: 8096
+          annotations: {}
+        
+        persistence:
+          config:
+            enabled: true
+            size: 2Gi
+            storageClass: ""
+            accessMode: ReadWriteOnce
+          media:
+            enabled: true
+            size: 100Gi
+            storageClass: ""
+            accessMode: ReadWriteMany
+        
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "2000m"
+        
+        env:
+          TZ: "UTC"
+        
+        nodeSelector: {}
+        tolerations: []
+        affinity: {}
+  
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: jellyfin
+  
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s 

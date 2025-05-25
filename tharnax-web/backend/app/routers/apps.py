@@ -187,6 +187,44 @@ async def get_available_apps(k8s_client: client.CoreV1Api = Depends(get_k8s_clie
                 else:
                     app_data.pop("url", None)
                     app_data.pop("urls", None)
+            elif app["id"] == "jellyfin":
+                jellyfin_installed = "jellyfin" in namespace_names
+                app_data["installed"] = jellyfin_installed
+                
+                if jellyfin_installed:
+                    try:
+                        services = k8s_client.list_namespaced_service(namespace="jellyfin")
+                        jellyfin_url = None
+                        
+                        master_ip = "localhost"
+                        try:
+                            nodes = k8s_client.list_node()
+                            if nodes.items:
+                                for address in nodes.items[0].status.addresses:
+                                    if address.type == "InternalIP":
+                                        master_ip = address.address
+                                        break
+                        except:
+                            pass
+                        
+                        for svc in services.items:
+                            if "jellyfin" in svc.metadata.name.lower():
+                                if svc.spec.type == "LoadBalancer":
+                                    if svc.status.load_balancer.ingress:
+                                        lb_ip = svc.status.load_balancer.ingress[0].ip
+                                        jellyfin_url = f"http://{lb_ip}:8096"
+                                    else:
+                                        jellyfin_url = f"http://{master_ip}:8096"
+                                else:
+                                    jellyfin_url = f"http://{master_ip}:8096"
+                        
+                        app_data["url"] = jellyfin_url or f"http://{master_ip}:8096"
+                        
+                    except Exception as e:
+                        logger.warning(f"Could not determine Jellyfin URL: {str(e)}")
+                        app_data["url"] = "http://localhost:8096"
+                else:
+                    app_data.pop("url", None)
             else:
                 app_data["installed"] = app["id"] in namespace_names
             

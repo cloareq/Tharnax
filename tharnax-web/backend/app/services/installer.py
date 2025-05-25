@@ -80,6 +80,63 @@ def detect_nfs_storage():
         logger.warning(f"Error detecting NFS storage: {e}")
         return False, None
 
+def create_jellyfin_helm_values(nfs_available: bool, nfs_path: Optional[str] = None, master_ip: str = "localhost"):
+    """
+    Create Helm values for Jellyfin with NFS storage configuration
+    """
+    helm_values = {
+        "image": {
+            "repository": "jellyfin/jellyfin",
+            "tag": "latest",
+            "pullPolicy": "Always"
+        },
+        "service": {
+            "type": "LoadBalancer",
+            "port": 8096,
+            "annotations": {}
+        },
+        "persistence": {
+            "config": {
+                "enabled": True,
+                "size": "2Gi",
+                "storageClass": "",
+                "accessMode": "ReadWriteOnce"
+            },
+            "media": {
+                "enabled": True,
+                "size": "100Gi",
+                "storageClass": ""
+            }
+        },
+        "resources": {
+            "requests": {
+                "memory": "512Mi",
+                "cpu": "250m"
+            },
+            "limits": {
+                "memory": "2Gi",
+                "cpu": "2000m"
+            }
+        },
+        "env": {
+            "TZ": "UTC",
+            "JELLYFIN_PublishedServerUrl": f"http://{master_ip}:8096"
+        },
+        "nodeSelector": {},
+        "tolerations": [],
+        "affinity": {}
+    }
+    
+    if nfs_available and nfs_path:
+        logger.info(f"Configuring Jellyfin with NFS storage: {nfs_path}")
+        helm_values["persistence"]["media"]["accessMode"] = "ReadWriteMany"
+        helm_values["persistence"]["config"]["accessMode"] = "ReadWriteMany"
+    else:
+        logger.info("Configuring Jellyfin with default storage")
+        helm_values["persistence"]["media"]["accessMode"] = "ReadWriteOnce"
+    
+    return helm_values
+
 def create_monitoring_helm_values(nfs_available: bool, nfs_path: Optional[str] = None):
     """
     Create Helm values for the monitoring stack (simplified, no ArgoCD complexity)
@@ -264,6 +321,136 @@ async def install_monitoring_stack(k8s_client: client.CoreV1Api):
             pass
         raise
 
+async def install_jellyfin_stack(k8s_client: client.CoreV1Api):
+    """
+    Install Jellyfin using ArgoCD and Helm
+    """
+    logger.info("Starting Jellyfin installation with ArgoCD")
+    
+    try:
+        nfs_available, nfs_path = detect_nfs_storage()
+        logger.info(f"NFS storage detection: available={nfs_available}, path={nfs_path}")
+        
+        # Get master node IP for service URL
+        master_ip = "localhost"
+        try:
+            nodes = k8s_client.list_node()
+            if nodes.items:
+                for address in nodes.items[0].status.addresses:
+                    if address.type == "InternalIP":
+                        master_ip = address.address
+                        break
+        except Exception as e:
+            logger.warning(f"Could not get master IP: {e}")
+        
+        # Create Helm values
+        helm_values = create_jellyfin_helm_values(nfs_available, nfs_path, master_ip)
+        
+        # Save values to temporary file
+        values_file = "/tmp/jellyfin-values.yaml"
+        with open(values_file, 'w') as f:
+            yaml.dump(helm_values, f)
+        
+        logger.info("Created Jellyfin Helm values file")
+        
+        # Create ArgoCD Application manifest
+        argocd_app = {
+            "apiVersion": "argoproj.io/v1alpha1",
+            "kind": "Application",
+            "metadata": {
+                "name": "jellyfin",
+                "namespace": "argocd",
+                "finalizers": ["resources-finalizer.argocd.argoproj.io"]
+            },
+            "spec": {
+                "project": "default",
+                "source": {
+                    "repoURL": "https://jellyfin.github.io/jellyfin-helm",
+                    "chart": "jellyfin",
+                    "targetRevision": "*",
+                    "helm": {
+                        "values": yaml.dump(helm_values)
+                    }
+                },
+                "destination": {
+                    "server": "https://kubernetes.default.svc",
+                    "namespace": "jellyfin"
+                },
+                "syncPolicy": {
+                    "automated": {
+                        "prune": True,
+                        "selfHeal": True
+                    },
+                    "syncOptions": [
+                        "CreateNamespace=true",
+                        "ApplyOutOfSyncOnly=true"
+                    ],
+                    "retry": {
+                        "limit": 5,
+                        "backoff": {
+                            "duration": "5s",
+                            "factor": 2,
+                            "maxDuration": "3m0s"
+                        }
+                    }
+                }
+            }
+        }
+        
+        # Save ArgoCD application manifest
+        app_file = "/tmp/jellyfin-application.yaml"
+        with open(app_file, 'w') as f:
+            yaml.dump(argocd_app, f)
+        
+        logger.info("Created ArgoCD Application manifest")
+        
+        # Apply the ArgoCD Application
+        env = os.environ.copy()
+        env["KUBERNETES_SERVICE_HOST"] = "kubernetes.default.svc.cluster.local"
+        env["KUBERNETES_SERVICE_PORT"] = "443"
+        
+        logger.info("Applying ArgoCD Application for Jellyfin...")
+        process = await asyncio.create_subprocess_exec(
+            "kubectl", "apply", "-f", app_file,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env
+        )
+        
+        stdout, stderr = await process.communicate()
+        
+        if process.returncode == 0:
+            logger.info("Jellyfin ArgoCD Application created successfully")
+            logger.info(f"kubectl output: {stdout.decode()}")
+            
+            # Clean up temporary files
+            try:
+                os.remove(values_file)
+                os.remove(app_file)
+            except:
+                pass
+            
+            return True
+        else:
+            logger.error(f"ArgoCD Application creation failed: {stderr.decode()}")
+            # Clean up temporary files
+            try:
+                os.remove(values_file)
+                os.remove(app_file)
+            except:
+                pass
+            return False
+        
+    except Exception as e:
+        logger.error(f"Error installing Jellyfin: {e}")
+        # Clean up temporary files
+        try:
+            os.remove("/tmp/jellyfin-values.yaml")
+            os.remove("/tmp/jellyfin-application.yaml")
+        except:
+            pass
+        raise
+
 async def install_component(component: str, config: Optional[Dict[str, Any]], k8s_client: client.CoreV1Api):
     """
     Install a component in the cluster with improved concurrency support
@@ -273,6 +460,8 @@ async def install_component(component: str, config: Optional[Dict[str, Any]], k8
     try:
         if component == "monitoring":
             return await install_monitoring_stack(k8s_client)
+        elif component == "jellyfin":
+            return await install_jellyfin_stack(k8s_client)
         else:
             try:
                 namespace = client.V1Namespace(
@@ -375,6 +564,69 @@ async def uninstall_monitoring_stack(k8s_client: client.CoreV1Api):
         logger.error(f"Error uninstalling monitoring stack: {e}")
         raise
 
+async def uninstall_jellyfin_stack(k8s_client: client.CoreV1Api):
+    """
+    Uninstall Jellyfin by removing ArgoCD application
+    """
+    logger.info("Starting Jellyfin uninstallation")
+    
+    try:
+        env = os.environ.copy()
+        env["KUBERNETES_SERVICE_HOST"] = "kubernetes.default.svc.cluster.local"
+        env["KUBERNETES_SERVICE_PORT"] = "443"
+        
+        logger.info("Deleting ArgoCD Application for Jellyfin...")
+        process = await asyncio.create_subprocess_exec(
+            "kubectl", "delete", "application", "jellyfin", 
+            "-n", "argocd", "--ignore-not-found=true",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env
+        )
+        stdout, stderr = await process.communicate()
+        
+        if process.returncode == 0:
+            logger.info("Jellyfin ArgoCD application deleted successfully")
+        else:
+            logger.warning(f"ArgoCD application deletion warning: {stderr.decode()}")
+        
+        # Give ArgoCD time to clean up resources
+        await asyncio.sleep(10)
+        
+        # Clean up any remaining resources
+        logger.info("Cleaning up remaining Jellyfin resources...")
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "kubectl", "delete", "pvc", "--all", "-n", "jellyfin",
+                "--ignore-not-found=true",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env
+            )
+            await process.communicate()
+            
+            # Delete the namespace (will be recreated on next install)
+            process = await asyncio.create_subprocess_exec(
+                "kubectl", "delete", "namespace", "jellyfin",
+                "--ignore-not-found=true",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env
+            )
+            await process.communicate()
+            
+        except Exception as e:
+            logger.warning(f"Error during resource cleanup: {e}")
+        
+        await asyncio.sleep(5)
+        
+        logger.info("Jellyfin uninstalled successfully")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error uninstalling Jellyfin: {e}")
+        raise
+
 async def uninstall_component(component: str, k8s_client: client.CoreV1Api):
     """
     Uninstall a component from the cluster
@@ -389,6 +641,8 @@ async def uninstall_component(component: str, k8s_client: client.CoreV1Api):
     try:
         if component == "monitoring":
             return await uninstall_monitoring_stack(k8s_client)
+        elif component == "jellyfin":
+            return await uninstall_jellyfin_stack(k8s_client)
         else:
             app_config = get_app_config(component)
             if not app_config:
@@ -448,6 +702,63 @@ async def restart_component(component: str, config: Optional[Dict[str, Any]], k8
             if not deployments.items:
                 logger.warning(f"No deployments found in {namespace} namespace")
                 return False
+            
+            for deployment in deployments.items:
+                deployment_name = deployment.metadata.name
+                logger.info(f"Restarting deployment: {deployment_name}")
+                
+                try:
+                    from datetime import datetime
+                    restart_annotation = {
+                        "kubectl.kubernetes.io/restartedAt": datetime.now().isoformat()
+                    }
+                    deployment.spec.template.metadata.annotations = deployment.spec.template.metadata.annotations or {}
+                    deployment.spec.template.metadata.annotations.update(restart_annotation)
+                    
+                    apps_v1.patch_namespaced_deployment(
+                        name=deployment_name,
+                        namespace=namespace,
+                        body=deployment
+                    )
+                    
+                    logger.info(f"Successfully triggered restart for {deployment_name}")
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to restart {deployment_name}: {e}")
+
+            statefulsets = apps_v1.list_namespaced_stateful_set(namespace=namespace)
+            for sts in statefulsets.items:
+                sts_name = sts.metadata.name
+                logger.info(f"Restarting StatefulSet: {sts_name}")
+                
+                try:
+                    from datetime import datetime
+                    restart_annotation = {
+                        "kubectl.kubernetes.io/restartedAt": datetime.now().isoformat()
+                    }
+                    
+                    sts.spec.template.metadata.annotations = sts.spec.template.metadata.annotations or {}
+                    sts.spec.template.metadata.annotations.update(restart_annotation)
+                    
+                    apps_v1.patch_namespaced_stateful_set(
+                        name=sts_name,
+                        namespace=namespace,
+                        body=sts
+                    )
+                    
+                    logger.info(f"Successfully triggered restart for StatefulSet {sts_name}")
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to restart StatefulSet {sts_name}: {e}")
+                    
+        elif component == "jellyfin":
+            logger.info("Restarting Jellyfin deployment...")
+            deployments = apps_v1.list_namespaced_deployment(namespace=namespace)
+            
+            if not deployments.items:
+                logger.warning(f"No deployments found in {namespace} namespace")
+                return False
+            
             for deployment in deployments.items:
                 deployment_name = deployment.metadata.name
                 logger.info(f"Restarting deployment: {deployment_name}")
