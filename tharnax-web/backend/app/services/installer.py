@@ -497,7 +497,7 @@ async def install_jellyfin_stack(k8s_client: client.CoreV1Api):
             os.remove("/tmp/jellyfin-application.yaml")
         except:
             pass
-        raise
+        return False
 
 async def install_component(component: str, config: Optional[Dict[str, Any]], k8s_client: client.CoreV1Api):
     """
