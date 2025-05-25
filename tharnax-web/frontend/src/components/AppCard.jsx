@@ -36,9 +36,14 @@ const AppCard = ({ app = {} }) => {
     } = app;
 
     const [installing, setInstalling] = useState(false);
+    const [uninstalling, setUninstalling] = useState(false);
+    const [restarting, setRestarting] = useState(false);
     const [status, setStatus] = useState(installed ? 'installed' : 'notInstalled');
     const [progress, setProgress] = useState(0);
     const [installMessage, setInstallMessage] = useState('');
+
+    // Check if this component can be uninstalled (exclude ArgoCD)
+    const canUninstall = id !== 'argocd';
 
     const handleInstall = async () => {
         // Prevent multiple installation attempts
@@ -107,6 +112,134 @@ const AppCard = ({ app = {} }) => {
         }
     };
 
+    const handleUninstall = async () => {
+        // Prevent multiple operations
+        if (installing || uninstalling || restarting || status === 'notInstalled') {
+            return;
+        }
+
+        try {
+            setUninstalling(true);
+            setStatus('uninstalling');
+            setProgress(5);
+            setInstallMessage('Starting uninstallation...');
+
+            console.log(`[${id}] Starting uninstallation...`);
+
+            const response = await apiClient.delete(`/install/${id}`);
+
+            console.log(`[${id}] Uninstallation response:`, response.data);
+
+            if (response.data.status === 'already_processing') {
+                setInstallMessage('Already being processed');
+                setProgress(10);
+                startPolling();
+                return;
+            } else if (response.data.status === 'started') {
+                setProgress(15);
+                setInstallMessage('Uninstallation initiated successfully');
+                startPolling();
+                return;
+            } else if (response.data.status === 'error') {
+                setStatus('error');
+                setUninstalling(false);
+                setProgress(0);
+                setInstallMessage(response.data.message || 'Failed to start uninstallation');
+                console.error(`[${id}] Uninstallation start error:`, response.data);
+                return;
+            }
+
+            // Default case - start polling anyway
+            setProgress(10);
+            setInstallMessage('Uninstallation request submitted');
+            startPolling();
+
+        } catch (error) {
+            console.error(`[${id}] Error starting uninstallation:`, error);
+            setStatus('error');
+            setUninstalling(false);
+            setProgress(0);
+
+            if (error.response) {
+                if (error.response.status === 403) {
+                    setInstallMessage('Cannot uninstall protected component');
+                } else if (error.response.status === 404) {
+                    setInstallMessage('Uninstallation service not available');
+                } else if (error.response.status >= 500) {
+                    setInstallMessage('Server error - please try again later');
+                } else {
+                    setInstallMessage(error.response.data?.message || 'Failed to start uninstallation');
+                }
+            } else {
+                setInstallMessage('Failed to start uninstallation');
+            }
+        }
+    };
+
+    const handleRestart = async () => {
+        // Prevent multiple operations
+        if (installing || uninstalling || restarting) {
+            return;
+        }
+
+        try {
+            setRestarting(true);
+            setStatus('restarting');
+            setProgress(5);
+            setInstallMessage('Starting restart...');
+
+            console.log(`[${id}] Starting restart...`);
+
+            const response = await apiClient.post(`/install/${id}/restart`);
+
+            console.log(`[${id}] Restart response:`, response.data);
+
+            if (response.data.status === 'already_processing') {
+                setInstallMessage('Already being processed');
+                setProgress(10);
+                startPolling();
+                return;
+            } else if (response.data.status === 'started') {
+                setProgress(15);
+                setInstallMessage('Restart initiated successfully');
+                startPolling();
+                return;
+            } else if (response.data.status === 'error') {
+                setStatus('error');
+                setRestarting(false);
+                setProgress(0);
+                setInstallMessage(response.data.message || 'Failed to start restart');
+                console.error(`[${id}] Restart start error:`, response.data);
+                return;
+            }
+
+            // Default case - start polling anyway
+            setProgress(10);
+            setInstallMessage('Restart request submitted');
+            startPolling();
+
+        } catch (error) {
+            console.error(`[${id}] Error starting restart:`, error);
+            setStatus('error');
+            setRestarting(false);
+            setProgress(0);
+
+            if (error.response) {
+                if (error.response.status === 403) {
+                    setInstallMessage('Cannot restart protected component');
+                } else if (error.response.status === 404) {
+                    setInstallMessage('Restart service not available');
+                } else if (error.response.status >= 500) {
+                    setInstallMessage('Server error - please try again later');
+                } else {
+                    setInstallMessage(error.response.data?.message || 'Failed to start restart');
+                }
+            } else {
+                setInstallMessage('Failed to start restart');
+            }
+        }
+    };
+
     const startPolling = () => {
         const pollInterval = 3000; // 3 seconds
         const maxAttempts = 300; // 15 minutes total (300 * 3 seconds)
@@ -126,6 +259,8 @@ const AppCard = ({ app = {} }) => {
                 if (statusData.status === 'completed' || statusData.status === 'installed') {
                     setStatus('installed');
                     setInstalling(false);
+                    setUninstalling(false);
+                    setRestarting(false);
                     setProgress(100);
                     setInstallMessage('Installation completed');
                     // Refresh the page to get updated URLs
@@ -133,31 +268,55 @@ const AppCard = ({ app = {} }) => {
                         window.location.reload();
                     }, 1000);
                     return;
+                } else if (statusData.status === 'not_installed') {
+                    setStatus('notInstalled');
+                    setInstalling(false);
+                    setUninstalling(false);
+                    setRestarting(false);
+                    setProgress(100);
+                    setInstallMessage('Uninstallation completed');
+                    // Refresh the page to get updated state
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 1000);
+                    return;
                 } else if (statusData.status === 'error') {
                     setStatus('error');
                     setInstalling(false);
-                    setInstallMessage(statusData.message || 'Installation failed');
-                    console.error(`[${id}] Installation error:`, statusData);
+                    setUninstalling(false);
+                    setRestarting(false);
+                    setInstallMessage(statusData.message || 'Operation failed');
+                    console.error(`[${id}] Operation error:`, statusData);
                     return;
                 } else if (statusData.status === 'installing' || statusData.status === 'not_found') {
                     // Keep polling for 'installing' status or if ArgoCD app not found yet
                     setStatus('installing');
                     setInstalling(true);
+                    setUninstalling(false);
+                    setRestarting(false);
                     // For monitoring, show more detailed status if available
                     if (id === 'monitoring' && statusData.argocd_health && statusData.argocd_sync) {
                         setInstallMessage(`${statusData.message} (Health: ${statusData.argocd_health}, Sync: ${statusData.argocd_sync})`);
                     }
-                } else if (statusData.status === 'not_installed') {
-                    // Installation hasn't started yet, keep polling briefly
-                    if (attempts < 5) {
+                } else if (statusData.status === 'uninstalling') {
+                    setStatus('uninstalling');
+                    setInstalling(false);
+                    setUninstalling(true);
+                    setRestarting(false);
+                } else if (statusData.status === 'restarting') {
+                    setStatus('restarting');
+                    setInstalling(false);
+                    setUninstalling(false);
+                    setRestarting(true);
+                } else {
+                    // For unknown statuses, try to infer the operation state
+                    if (uninstalling) {
+                        setStatus('uninstalling');
+                    } else if (restarting) {
+                        setStatus('restarting');
+                    } else {
                         setStatus('installing');
                         setInstalling(true);
-                        setInstallMessage('Waiting for installation to start...');
-                    } else {
-                        setStatus('error');
-                        setInstalling(false);
-                        setInstallMessage('Installation failed to start');
-                        return;
                     }
                 }
 
@@ -230,6 +389,10 @@ const AppCard = ({ app = {} }) => {
                 return <XCircleIcon className="h-6 w-6 text-gray-400" />;
             case 'installing':
                 return <ClockIcon className="h-6 w-6 text-yellow-500 animate-pulse" />;
+            case 'uninstalling':
+                return <ClockIcon className="h-6 w-6 text-orange-500 animate-pulse" />;
+            case 'restarting':
+                return <ClockIcon className="h-6 w-6 text-blue-500 animate-pulse" />;
             case 'error':
                 return <XCircleIcon className="h-6 w-6 text-red-500" />;
             default:
@@ -257,12 +420,15 @@ const AppCard = ({ app = {} }) => {
                     </div>
 
                     {/* Installation progress */}
-                    {installing && (
+                    {(installing || uninstalling || restarting) && (
                         <div className="mt-3">
                             <div className="text-xs text-gray-400 mb-1">{installMessage}</div>
                             <div className="w-full bg-gray-700 rounded-full h-2">
                                 <div
-                                    className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                                    className={`h-2 rounded-full transition-all duration-300 ${restarting ? 'bg-blue-600' :
+                                        uninstalling ? 'bg-orange-600' :
+                                            'bg-blue-600'
+                                        }`}
                                     style={{ width: `${progress}%` }}
                                 ></div>
                             </div>
@@ -300,21 +466,55 @@ const AppCard = ({ app = {} }) => {
                     )}
                 </div>
 
-                <button
-                    onClick={handleInstall}
-                    disabled={installing || status === 'installed'}
-                    className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${status === 'installed'
-                        ? 'bg-gray-700 text-gray-400 cursor-not-allowed'
-                        : installing
-                            ? 'bg-yellow-600 text-white cursor-wait'
-                            : 'bg-tharnax-accent text-white hover:bg-blue-700'
-                        }`}
-                >
-                    {status === 'installed' ? 'Installed' : installing ? 'Installing...' : 'Install'}
-                    {!installing && status !== 'installed' && (
-                        <ArrowRightIcon className="ml-1 h-4 w-4" />
+                <div className="flex flex-col gap-2">
+                    {/* Install Button */}
+                    <button
+                        onClick={handleInstall}
+                        disabled={installing || uninstalling || restarting || status === 'installed'}
+                        className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${status === 'installed'
+                            ? 'bg-gray-700 text-gray-400 cursor-not-allowed'
+                            : installing || uninstalling || restarting
+                                ? 'bg-yellow-600 text-white cursor-wait'
+                                : 'bg-tharnax-accent text-white hover:bg-blue-700'
+                            }`}
+                    >
+                        {status === 'installed' ? 'Installed' :
+                            installing ? 'Installing...' :
+                                uninstalling ? 'Processing...' :
+                                    restarting ? 'Processing...' : 'Install'}
+                        {!installing && !uninstalling && !restarting && status !== 'installed' && (
+                            <ArrowRightIcon className="ml-1 h-4 w-4" />
+                        )}
+                    </button>
+
+                    {/* Uninstall Button - only show if installed and can be uninstalled */}
+                    {isInstalled && canUninstall && (
+                        <button
+                            onClick={handleUninstall}
+                            disabled={installing || uninstalling || restarting}
+                            className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${installing || uninstalling || restarting
+                                    ? 'bg-gray-600 text-gray-400 cursor-wait'
+                                    : 'bg-red-600 text-white hover:bg-red-700'
+                                }`}
+                        >
+                            {uninstalling ? 'Uninstalling...' : 'Uninstall'}
+                        </button>
                     )}
-                </button>
+
+                    {/* Restart Button - only show if installed and can be uninstalled */}
+                    {isInstalled && canUninstall && (
+                        <button
+                            onClick={handleRestart}
+                            disabled={installing || uninstalling || restarting}
+                            className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${installing || uninstalling || restarting
+                                    ? 'bg-gray-600 text-gray-400 cursor-wait'
+                                    : 'bg-orange-600 text-white hover:bg-orange-700'
+                                }`}
+                        >
+                            {restarting ? 'Restarting...' : 'Restart'}
+                        </button>
+                    )}
+                </div>
             </div>
         </div>
     );

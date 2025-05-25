@@ -10,6 +10,34 @@ from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
+# App configuration registry for managing different applications
+APP_REGISTRY = {
+    "monitoring": {
+        "name": "Monitoring Stack",
+        "can_uninstall": True,
+        "helm_release": "monitoring-stack",
+        "namespace": "monitoring",
+        "argocd_app": "monitoring-stack"
+    },
+    "argocd": {
+        "name": "ArgoCD",
+        "can_uninstall": False,  # Protected - cannot be uninstalled
+        "helm_release": "argocd",
+        "namespace": "argocd",
+        "argocd_app": None  # ArgoCD manages itself
+    }
+    # Future apps can be added here with their specific configurations
+}
+
+def get_app_config(component: str) -> Optional[Dict[str, Any]]:
+    """Get configuration for a specific app component"""
+    return APP_REGISTRY.get(component)
+
+def can_uninstall_component(component: str) -> bool:
+    """Check if a component can be uninstalled"""
+    app_config = get_app_config(component)
+    return app_config is not None and app_config.get("can_uninstall", True)
+
 def detect_nfs_storage():
     """
     Detect if NFS storage is available in the cluster
@@ -289,4 +317,178 @@ async def install_component(component: str, config: Optional[Dict[str, Any]], k8
             return True
     except Exception as e:
         logger.error(f"Error installing {component}: {e}")
+        raise 
+
+async def uninstall_monitoring_stack(k8s_client: client.CoreV1Api):
+    """
+    Uninstall the monitoring stack by removing Helm release and ArgoCD application
+    """
+    logger.info("Starting monitoring stack uninstallation")
+    
+    try:
+        # Set environment for in-cluster access
+        env = os.environ.copy()
+        env["KUBERNETES_SERVICE_HOST"] = "kubernetes.default.svc.cluster.local"
+        env["KUBERNETES_SERVICE_PORT"] = "443"
+        
+        # Step 1: Delete ArgoCD Application if it exists
+        try:
+            logger.info("Attempting to delete ArgoCD application...")
+            process = await asyncio.create_subprocess_exec(
+                "kubectl", "delete", "application", "monitoring-stack", 
+                "-n", "argocd", "--ignore-not-found=true",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env
+            )
+            stdout, stderr = await process.communicate()
+            if process.returncode == 0:
+                logger.info("ArgoCD application deleted successfully")
+            else:
+                logger.warning(f"ArgoCD application deletion warning: {stderr.decode()}")
+        except Exception as e:
+            logger.warning(f"Could not delete ArgoCD application: {e}")
+        
+        # Step 2: Uninstall Helm release
+        logger.info("Uninstalling Helm release...")
+        process = await asyncio.create_subprocess_exec(
+            "helm", "uninstall", "monitoring-stack", 
+            "--namespace", "monitoring",
+            "--wait", "--timeout", "10m",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env
+        )
+        
+        stdout, stderr = await process.communicate()
+        
+        if process.returncode == 0:
+            logger.info("Helm release uninstalled successfully")
+        else:
+            logger.warning(f"Helm uninstall warning: {stderr.decode()}")
+        
+        # Step 3: Clean up PVCs and other resources
+        logger.info("Cleaning up persistent resources...")
+        try:
+            # Delete PVCs in monitoring namespace
+            process = await asyncio.create_subprocess_exec(
+                "kubectl", "delete", "pvc", "--all", "-n", "monitoring",
+                "--ignore-not-found=true",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env
+            )
+            await process.communicate()
+            
+            # Delete any remaining monitoring resources
+            process = await asyncio.create_subprocess_exec(
+                "kubectl", "delete", "prometheus,alertmanager,servicemonitor,prometheusrule",
+                "--all", "-n", "monitoring", "--ignore-not-found=true",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env
+            )
+            await process.communicate()
+            
+        except Exception as e:
+            logger.warning(f"Error during resource cleanup: {e}")
+        
+        # Step 4: Wait a bit for resources to be cleaned up
+        await asyncio.sleep(5)
+        
+        # Step 5: Optionally delete the namespace (but leave it for potential reinstall)
+        # We'll keep the namespace to avoid issues with service accounts, etc.
+        
+        logger.info("Monitoring stack uninstalled successfully")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error uninstalling monitoring stack: {e}")
+        raise
+
+async def uninstall_component(component: str, k8s_client: client.CoreV1Api):
+    """
+    Uninstall a component from the cluster
+    """
+    logger.info(f"Starting uninstallation of {component}")
+    
+    # Check if component can be uninstalled
+    if not can_uninstall_component(component):
+        app_config = get_app_config(component)
+        app_name = app_config["name"] if app_config else component
+        raise ValueError(f"{app_name} cannot be uninstalled as it's a protected system component")
+    
+    try:
+        if component == "monitoring":
+            return await uninstall_monitoring_stack(k8s_client)
+        else:
+            # Generic uninstall for other components
+            app_config = get_app_config(component)
+            if not app_config:
+                raise ValueError(f"Unknown component: {component}")
+            
+            env = os.environ.copy()
+            env["KUBERNETES_SERVICE_HOST"] = "kubernetes.default.svc.cluster.local"
+            env["KUBERNETES_SERVICE_PORT"] = "443"
+            
+            # Delete ArgoCD application if specified
+            if app_config.get("argocd_app"):
+                try:
+                    process = await asyncio.create_subprocess_exec(
+                        "kubectl", "delete", "application", app_config["argocd_app"], 
+                        "-n", "argocd", "--ignore-not-found=true",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        env=env
+                    )
+                    await process.communicate()
+                except Exception as e:
+                    logger.warning(f"Could not delete ArgoCD application for {component}: {e}")
+            
+            # Uninstall Helm release if specified
+            if app_config.get("helm_release"):
+                process = await asyncio.create_subprocess_exec(
+                    "helm", "uninstall", app_config["helm_release"], 
+                    "--namespace", app_config["namespace"],
+                    "--wait", "--timeout", "5m",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env
+                )
+                await process.communicate()
+            
+            logger.info(f"Completed uninstallation of {component}")
+            return True
+    except Exception as e:
+        logger.error(f"Error uninstalling {component}: {e}")
+        raise
+
+async def restart_component(component: str, config: Optional[Dict[str, Any]], k8s_client: client.CoreV1Api):
+    """
+    Restart a component by uninstalling and then reinstalling it
+    """
+    logger.info(f"Starting restart of {component}")
+    
+    try:
+        # Step 1: Uninstall the component
+        logger.info(f"Uninstalling {component}...")
+        await uninstall_component(component, k8s_client)
+        
+        # Step 2: Wait a bit for cleanup
+        logger.info("Waiting for cleanup to complete...")
+        await asyncio.sleep(10)
+        
+        # Step 3: Reinstall the component
+        logger.info(f"Reinstalling {component}...")
+        result = await install_component(component, config, k8s_client)
+        
+        if result:
+            logger.info(f"Successfully restarted {component}")
+            return True
+        else:
+            logger.error(f"Failed to reinstall {component} after uninstall")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error restarting {component}: {e}")
         raise 

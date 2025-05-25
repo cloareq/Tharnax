@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from app.kubernetes.client import get_k8s_client
-from app.services.installer import install_component
+from app.services.installer import install_component, uninstall_component, restart_component, can_uninstall_component, get_app_config
 from kubernetes import client
 from typing import Dict, Any
 import logging
@@ -15,7 +15,7 @@ router = APIRouter(
 )
 
 # List of valid components that can be installed
-VALID_COMPONENTS = ["nfs-server", "jellyfin", "sonarr", "prometheus", "grafana", "monitoring"]
+VALID_COMPONENTS = ["nfs-server", "jellyfin", "sonarr", "prometheus", "grafana", "monitoring", "argocd"]
 
 # Global installation status tracking
 installation_status = {}
@@ -70,6 +70,118 @@ async def install_app(
         "progress": 0
     }
 
+@router.delete("/{component}")
+async def uninstall_app(
+    component: str,
+    background_tasks: BackgroundTasks,
+    k8s_client: client.CoreV1Api = Depends(get_k8s_client)
+):
+    """
+    Trigger uninstallation of a specific component
+    """
+    # Check if component is valid
+    if component not in VALID_COMPONENTS:
+        logger.warning(f"Requested uninstallation of unknown component: {component}")
+        raise HTTPException(status_code=404, detail=f"Component '{component}' not found")
+    
+    # Check if component can be uninstalled
+    if not can_uninstall_component(component):
+        app_config = get_app_config(component)
+        app_name = app_config["name"] if app_config else component
+        logger.warning(f"Attempted to uninstall protected component: {component}")
+        raise HTTPException(status_code=403, detail=f"{app_name} cannot be uninstalled as it's a protected system component")
+    
+    # Check if component is already being processed
+    if component in installation_status and installation_status[component]["status"] in ["installing", "uninstalling", "restarting"]:
+        logger.info(f"Component '{component}' is already being processed")
+        return {
+            "status": "already_processing",
+            "message": f"{component} is already being processed",
+            "component": component
+        }
+    
+    logger.info(f"Starting uninstallation of '{component}'")
+    
+    # Initialize uninstallation status
+    installation_status[component] = {
+        "status": "uninstalling",
+        "progress": 0,
+        "message": f"Starting uninstallation of {component}",
+        "started_at": datetime.now().isoformat(),
+        "component": component
+    }
+    
+    # Start uninstallation in background
+    background_tasks.add_task(
+        uninstall_component_with_status,
+        component,
+        k8s_client
+    )
+    
+    return {
+        "status": "started",
+        "message": f"Uninstallation of {component} started",
+        "component": component,
+        "progress": 0
+    }
+
+@router.post("/{component}/restart")
+async def restart_app(
+    component: str,
+    background_tasks: BackgroundTasks,
+    config: Dict[str, Any] = None,
+    k8s_client: client.CoreV1Api = Depends(get_k8s_client)
+):
+    """
+    Trigger restart (uninstall + install) of a specific component
+    """
+    # Check if component is valid
+    if component not in VALID_COMPONENTS:
+        logger.warning(f"Requested restart of unknown component: {component}")
+        raise HTTPException(status_code=404, detail=f"Component '{component}' not found")
+    
+    # Check if component can be uninstalled (needed for restart)
+    if not can_uninstall_component(component):
+        app_config = get_app_config(component)
+        app_name = app_config["name"] if app_config else component
+        logger.warning(f"Attempted to restart protected component: {component}")
+        raise HTTPException(status_code=403, detail=f"{app_name} cannot be restarted as it's a protected system component")
+    
+    # Check if component is already being processed
+    if component in installation_status and installation_status[component]["status"] in ["installing", "uninstalling", "restarting"]:
+        logger.info(f"Component '{component}' is already being processed")
+        return {
+            "status": "already_processing",
+            "message": f"{component} is already being processed",
+            "component": component
+        }
+    
+    logger.info(f"Starting restart of '{component}'")
+    
+    # Initialize restart status
+    installation_status[component] = {
+        "status": "restarting",
+        "progress": 0,
+        "message": f"Starting restart of {component}",
+        "started_at": datetime.now().isoformat(),
+        "component": component
+    }
+    
+    # Start restart in background
+    background_tasks.add_task(
+        restart_component_with_status,
+        component,
+        config or {},
+        k8s_client
+    )
+    
+    return {
+        "status": "started",
+        "message": f"Restart of {component} started",
+        "component": component,
+        "progress": 0
+    }
+
 async def install_component_with_status(component: str, config: Dict[str, Any], k8s_client: client.CoreV1Api):
     """
     Wrapper function to track installation status for direct Helm installation
@@ -115,6 +227,64 @@ async def install_component_with_status(component: str, config: Dict[str, Any], 
         installation_status[component]["status"] = "error"
         installation_status[component]["progress"] = 0
         installation_status[component]["message"] = f"Installation failed: {str(e)}"
+
+async def uninstall_component_with_status(component: str, k8s_client: client.CoreV1Api):
+    """
+    Wrapper function to track uninstallation status
+    """
+    try:
+        # Update status to uninstalling
+        installation_status[component]["status"] = "uninstalling"
+        installation_status[component]["progress"] = 10
+        installation_status[component]["message"] = f"Uninstalling {component}..."
+        
+        # Perform the actual uninstallation
+        result = await uninstall_component(component, k8s_client)
+        
+        if result:
+            installation_status[component]["status"] = "not_installed"
+            installation_status[component]["progress"] = 100
+            installation_status[component]["message"] = f"{component} uninstalled successfully!"
+            logger.info(f"{component} uninstallation completed successfully")
+        else:
+            installation_status[component]["status"] = "error"
+            installation_status[component]["progress"] = 0
+            installation_status[component]["message"] = f"Failed to uninstall {component}"
+    
+    except Exception as e:
+        logger.error(f"Error uninstalling {component}: {str(e)}")
+        installation_status[component]["status"] = "error"
+        installation_status[component]["progress"] = 0
+        installation_status[component]["message"] = f"Uninstallation failed: {str(e)}"
+
+async def restart_component_with_status(component: str, config: Dict[str, Any], k8s_client: client.CoreV1Api):
+    """
+    Wrapper function to track restart status
+    """
+    try:
+        # Update status to restarting - uninstall phase
+        installation_status[component]["status"] = "restarting"
+        installation_status[component]["progress"] = 10
+        installation_status[component]["message"] = f"Restarting {component} - uninstalling..."
+        
+        # Perform the restart (uninstall + install)
+        result = await restart_component(component, config, k8s_client)
+        
+        if result:
+            installation_status[component]["status"] = "completed"
+            installation_status[component]["progress"] = 100
+            installation_status[component]["message"] = f"{component} restarted successfully!"
+            logger.info(f"{component} restart completed successfully")
+        else:
+            installation_status[component]["status"] = "error"
+            installation_status[component]["progress"] = 0
+            installation_status[component]["message"] = f"Failed to restart {component}"
+    
+    except Exception as e:
+        logger.error(f"Error restarting {component}: {str(e)}")
+        installation_status[component]["status"] = "error"
+        installation_status[component]["progress"] = 0
+        installation_status[component]["message"] = f"Restart failed: {str(e)}"
 
 @router.get("/{component}/status")
 async def get_install_status(
