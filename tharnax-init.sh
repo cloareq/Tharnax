@@ -1,5 +1,4 @@
 #!/bin/bash
-# tharnax-init.sh - Tharnax Homelab Infrastructure Setup Script
 
 set -e
 
@@ -20,11 +19,13 @@ show_usage() {
     echo "Usage: $0 [options]"
     echo
     echo "Options:"
-    echo "  -h, --help      Show this help message"
-    echo "  -u, --uninstall Uninstall K3s from all nodes and clean up"
-    echo "  --nfs           Install only NFS storage (requires K3s already installed)"
-    echo "  --ui            Install only Web UI (requires K3s already installed)"
-    echo "  --argocd        Install only Argo CD (requires K3s already installed)"
+    echo "  -h, --help         Show this help message"
+    echo "  -u, --uninstall    Uninstall K3s from all nodes and clean up"
+    echo "  --add-worker       Add a new worker node to existing cluster"
+    echo "  --remove-worker    Remove a worker node from existing cluster"
+    echo "  --nfs              Install only NFS storage (requires K3s already installed)"
+    echo "  --ui               Install only Web UI (requires K3s already installed)"
+    echo "  --argocd           Install only Argo CD (requires K3s already installed)"
     echo
     echo "Without options, runs the full installation process (K3s + NFS + UI + ArgoCD)"
 }
@@ -41,6 +42,12 @@ parse_args() {
                 ;;
             -u|--uninstall)
                 UNINSTALL_MODE=true
+                ;;
+            --add-worker)
+                ADD_WORKER_MODE=true
+                ;;
+            --remove-worker)
+                REMOVE_WORKER_MODE=true
                 ;;
             --nfs)
                 COMPONENT_NFS=true
@@ -115,14 +122,13 @@ save_config() {
     done
     
     echo "SSH_USER=\"$SSH_USER\"" >> "$CONFIG_FILE"
-    echo "AUTH_TYPE=\"$AUTH_TYPE\"" >> "$CONFIG_FILE"
+    echo "AUTH_TYPE=\"key\"" >> "$CONFIG_FILE"
     
-    if [ "$AUTH_TYPE" = "key" ]; then
+    if [ -n "$SSH_KEY" ]; then
         echo "SSH_KEY=\"$SSH_KEY\"" >> "$CONFIG_FILE"
     fi
     
     echo "" >> "$CONFIG_FILE"
-    echo "# Component Installation State" >> "$CONFIG_FILE"
     echo "K3S_INSTALLED=\"${K3S_INSTALLED:-false}\"" >> "$CONFIG_FILE"
     echo "NFS_INSTALLED=\"${NFS_INSTALLED:-false}\"" >> "$CONFIG_FILE"
     echo "UI_INSTALLED=\"${UI_INSTALLED:-false}\"" >> "$CONFIG_FILE"
@@ -141,7 +147,6 @@ save_config() {
     echo -e "${BLUE}Configuration saved to $CONFIG_FILE${NC}"
 }
 
-# Helper function to mark a component as installed
 mark_component_installed() {
     local component="$1"
     local url="$2"
@@ -173,7 +178,6 @@ mark_component_installed() {
     save_config
 }
 
-# Helper function to check if a component is already installed
 is_component_installed() {
     local component="$1"
     
@@ -199,21 +203,16 @@ is_component_installed() {
     esac
 }
 
-# Enhanced detection functions that also check runtime status
 detect_k3s_installation() {
-    # Check config file first
     if is_component_installed "k3s"; then
-        # Verify it's actually running
         if check_existing_k3s; then
             return 0
         else
-            # Config says installed but not running - update config
             K3S_INSTALLED="false"
             save_config
         fi
     fi
     
-    # Check runtime status
     if check_existing_k3s; then
         K3S_INSTALLED="true"
         save_config
@@ -224,23 +223,19 @@ detect_k3s_installation() {
 }
 
 detect_nfs_installation() {
-    # Check config file first
     if is_component_installed "nfs"; then
-        # Verify NFS is actually configured
         if command -v kubectl >/dev/null 2>&1; then
             if kubectl get storageclass nfs-storage >/dev/null 2>&1; then
                 return 0
             else
-                # Config says installed but storage class not found
                 NFS_INSTALLED="false"
                 save_config
             fi
         else
-            return 0  # Can't verify without kubectl, trust config
+            return 0
         fi
     fi
     
-    # Check runtime status
     if command -v kubectl >/dev/null 2>&1; then
         if kubectl get storageclass nfs-storage >/dev/null 2>&1; then
             NFS_INSTALLED="true"
@@ -253,27 +248,22 @@ detect_nfs_installation() {
 }
 
 detect_ui_installation() {
-    # Check config file first
     if is_component_installed "ui"; then
-        # Verify UI is actually deployed
         if command -v kubectl >/dev/null 2>&1; then
             if kubectl get deployment tharnax-web -n tharnax-web >/dev/null 2>&1; then
                 return 0
             else
-                # Config says installed but deployment not found
                 UI_INSTALLED="false"
                 save_config
             fi
         else
-            return 0  # Can't verify without kubectl, trust config
+            return 0
         fi
     fi
     
-    # Check runtime status
     if command -v kubectl >/dev/null 2>&1; then
         if kubectl get deployment tharnax-web -n tharnax-web >/dev/null 2>&1; then
             UI_INSTALLED="true"
-            # Try to get the UI URL
             UI_IP=$(kubectl -n tharnax-web get service tharnax-web -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
             if [ -z "$UI_IP" ]; then
                 UI_IP="$MASTER_IP"
@@ -288,27 +278,22 @@ detect_ui_installation() {
 }
 
 detect_argocd_installation() {
-    # Check config file first
     if is_component_installed "argocd"; then
-        # Verify ArgoCD is actually deployed
         if command -v kubectl >/dev/null 2>&1; then
             if kubectl get deployment argocd-server -n argocd >/dev/null 2>&1; then
                 return 0
             else
-                # Config says installed but deployment not found
                 ARGOCD_INSTALLED="false"
                 save_config
             fi
         else
-            return 0  # Can't verify without kubectl, trust config
+            return 0
         fi
     fi
     
-    # Check runtime status
     if command -v kubectl >/dev/null 2>&1; then
         if kubectl get deployment argocd-server -n argocd >/dev/null 2>&1; then
             ARGOCD_INSTALLED="true"
-            # Try to get the ArgoCD URL
             ARGOCD_IP=$(kubectl -n argocd get service argocd-server -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
             if [ -z "$ARGOCD_IP" ]; then
                 ARGOCD_IP="$MASTER_IP"
@@ -323,19 +308,15 @@ detect_argocd_installation() {
 }
 
 detect_helm_installation() {
-    # Check config file first
     if is_component_installed "helm"; then
-        # Verify Helm is actually installed
         if command -v helm >/dev/null 2>&1; then
             return 0
         else
-            # Config says installed but helm not found
             HELM_INSTALLED="false"
             save_config
         fi
     fi
     
-    # Check runtime status
     if command -v helm >/dev/null 2>&1; then
         HELM_INSTALLED="true"
         save_config
@@ -482,7 +463,7 @@ collect_ssh_info() {
     fi
     
     if [ -n "$AUTH_TYPE" ]; then
-        echo -e "Previous authentication method: ${GREEN}$([ "$AUTH_TYPE" = "key" ] && echo "SSH key" || echo "Password")${NC}"
+        echo -e "Previous authentication method: ${GREEN}SSH key${NC}"
         read -p "Use this method? (Y/n): " confirm
         if [[ "$confirm" =~ ^[Nn] ]]; then
             unset AUTH_TYPE
@@ -490,23 +471,29 @@ collect_ssh_info() {
     fi
     
     if [ -z "$AUTH_TYPE" ]; then
-        echo "Select authentication method:"
-        echo "1) SSH key (more secure, recommended)"
-        echo "2) Password"
-        read -p "Enter choice [1]: " AUTH_METHOD
+        echo "Select SSH setup method:"
+        echo "1) Use existing SSH key"
+        echo "2) Create new SSH key and distribute to nodes (recommended)"
+        read -p "Enter choice [2]: " AUTH_METHOD
         
         if [ -z "$AUTH_METHOD" ]; then
-            AUTH_METHOD=1
+            AUTH_METHOD=2
         fi
         
-        if [ "$AUTH_METHOD" = "1" ]; then
-            AUTH_TYPE="key"
-        else
-            AUTH_TYPE="password"
-        fi
+        case "$AUTH_METHOD" in
+            1)
+                AUTH_TYPE="key"
+                ;;
+            2|*)
+                AUTH_TYPE="key"
+                CREATE_AND_DISTRIBUTE_KEY=true
+                ;;
+        esac
     fi
     
-    if [ "$AUTH_TYPE" = "key" ]; then
+    if [ "$CREATE_AND_DISTRIBUTE_KEY" = true ]; then
+        setup_ssh_keys
+    else
         if [ -n "$SSH_KEY" ]; then
             echo -e "Previous SSH key path: ${GREEN}${SSH_KEY}${NC}"
             read -p "Use this key? (Y/n): " confirm
@@ -533,53 +520,395 @@ collect_ssh_info() {
                 echo "Aborting."
                 exit 1
             fi
+        else
+            # Test if the existing SSH key works on all nodes
+            test_and_distribute_existing_key
         fi
-    else
-        echo -e "${YELLOW}Note: Using password authentication. You will be prompted for passwords during Ansible execution.${NC}"
-        SSH_KEY=""
-        USE_PASSWORD_AUTH=true
     fi
     
     save_config
 }
 
-check_sshpass() {
-    if [ "$AUTH_TYPE" = "password" ] && ! command -v sshpass >/dev/null 2>&1; then
-        echo -e "${YELLOW}Warning: Password authentication requires the 'sshpass' program, which is not installed.${NC}"
-        read -p "Would you like to install sshpass now? (y/N): " install_sshpass
-        if [[ "$install_sshpass" =~ ^[Yy] ]]; then
-            echo "Installing sshpass..."
+setup_ssh_keys() {
+    echo ""
+    echo -e "${BLUE}Setting up SSH keys for passwordless authentication...${NC}"
+    
+    DEFAULT_KEY="$HOME/.ssh/tharnax_rsa"
+    read -p "Enter path for new SSH key [default: ${DEFAULT_KEY}]: " SSH_KEY
+    
+    if [ -z "$SSH_KEY" ]; then
+        SSH_KEY=$DEFAULT_KEY
+    fi
+    
+    SSH_KEY="${SSH_KEY/#\~/$HOME}"
+    SSH_PUB_KEY="${SSH_KEY}.pub"
+    
+    if [ -f "$SSH_KEY" ]; then
+        echo -e "${YELLOW}SSH key already exists at ${SSH_KEY}${NC}"
+        read -p "Use existing key? (Y/n): " use_existing
+        if [[ "$use_existing" =~ ^[Nn] ]]; then
+            read -p "Enter a different path for the SSH key: " SSH_KEY
+            SSH_KEY="${SSH_KEY/#\~/$HOME}"
+            SSH_PUB_KEY="${SSH_KEY}.pub"
+        fi
+    fi
+    
+    if [ ! -f "$SSH_KEY" ]; then
+        echo -e "${BLUE}Creating new SSH key at ${SSH_KEY}...${NC}"
+        
+        mkdir -p "$(dirname "$SSH_KEY")"
+        
+        ssh-keygen -t rsa -b 4096 -f "$SSH_KEY" -N "" -C "tharnax-$(date +%Y%m%d)"
+        
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}Failed to create SSH key.${NC}"
+            exit 1
+        fi
+        
+        echo -e "${GREEN}SSH key created successfully.${NC}"
+    fi
+    
+    if ! command -v sshpass >/dev/null 2>&1; then
+        echo -e "${YELLOW}Installing sshpass for initial key distribution...${NC}"
             sudo apt update
             sudo apt install -y sshpass
             
             if ! command -v sshpass >/dev/null 2>&1; then
-                echo -e "${YELLOW}Failed to install sshpass. Cannot continue with password authentication.${NC}"
+            echo -e "${RED}Failed to install sshpass. Cannot distribute SSH keys.${NC}"
                 exit 1
             fi
-        else
-            echo -e "${YELLOW}Cannot continue with password authentication without sshpass.${NC}"
-            echo "Options:"
-            echo "1. Re-run this script and select SSH key authentication"
-            echo "2. Manually install sshpass and then re-run this script"
+    fi
+    
+    echo ""
+    echo -e "${BLUE}To distribute the SSH key to all nodes, we need the SSH password (used only once).${NC}"
+    read -s -p "Enter SSH password for user ${SSH_USER}: " ssh_password
+    echo
+    
+    echo -e "${BLUE}Testing SSH connection to master node (${MASTER_IP})...${NC}"
+    if ! SSHPASS="$ssh_password" sshpass -e ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$SSH_USER@$MASTER_IP" "echo 'SSH connection successful'" >/dev/null 2>&1; then
+        echo -e "${RED}Failed to connect to master node ${MASTER_IP} with provided credentials.${NC}"
+        echo -e "${YELLOW}Please verify:${NC}"
+        echo -e "${YELLOW}  - The IP address is correct${NC}"
+        echo -e "${YELLOW}  - The username is correct${NC}"
+        echo -e "${YELLOW}  - The password is correct${NC}"
+        echo -e "${YELLOW}  - SSH is enabled on the target node${NC}"
+        exit 1
+    fi
+    
+    echo -e "${GREEN}SSH connection to master node successful.${NC}"
+    
+    echo -e "${BLUE}Distributing SSH key to master node (${MASTER_IP})...${NC}"
+    distribute_ssh_key_to_node "$MASTER_IP" "$ssh_password"
+    
+    for ((i=1; i<=WORKER_COUNT; i++)); do
+        varname="WORKER_IP_$i"
+        worker_ip=${!varname}
+        
+        if [ -n "$worker_ip" ]; then
+            echo -e "${BLUE}Distributing SSH key to worker node $i (${worker_ip})...${NC}"
+            distribute_ssh_key_to_node "$worker_ip" "$ssh_password"
+        fi
+    done
+    
+    echo -e "${BLUE}Testing key-based authentication...${NC}"
+    if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "$SSH_KEY" "$SSH_USER@$MASTER_IP" "echo 'Key-based authentication successful'" >/dev/null 2>&1; then
+        echo -e "${GREEN}Key-based authentication is working!${NC}"
+        echo -e "${BLUE}All future operations will use SSH keys (no more passwords needed).${NC}"
+    else
+        echo -e "${RED}Key-based authentication test failed.${NC}"
+        echo -e "${YELLOW}You may need to check SSH configuration on the target nodes.${NC}"
             exit 1
         fi
+    
+    unset ssh_password
+}
+
+test_and_distribute_existing_key() {
+    echo ""
+    echo -e "${BLUE}Testing existing SSH key on all nodes...${NC}"
+    
+    SSH_PUB_KEY="${SSH_KEY}.pub"
+    
+    # Check if public key exists
+    if [ ! -f "$SSH_PUB_KEY" ]; then
+        echo -e "${YELLOW}Public key not found at ${SSH_PUB_KEY}${NC}"
+        echo -e "${YELLOW}Cannot test or distribute the key without the public key file.${NC}"
+        read -p "Continue anyway? (y/N): " continue_anyway
+        if [[ ! "$continue_anyway" =~ ^[Yy] ]]; then
+            echo "Aborting."
+            exit 1
+        fi
+        return
+    fi
+    
+    # Test SSH key on master node (disable password auth to test key only)
+    nodes_need_key=()
+    echo -e "${BLUE}Testing SSH key on master node (${MASTER_IP})...${NC}"
+    if ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o PasswordAuthentication=no -o PubkeyAuthentication=yes -i "$SSH_KEY" "$SSH_USER@$MASTER_IP" "echo 'Key works'" >/dev/null 2>&1; then
+        echo -e "${YELLOW}  SSH key doesn't work on master node${NC}"
+        nodes_need_key+=("$MASTER_IP master")
+    else
+        echo -e "${GREEN}  ✓ SSH key works on master node${NC}"
+    fi
+    
+    # Test SSH key on worker nodes
+    for ((i=1; i<=WORKER_COUNT; i++)); do
+        varname="WORKER_IP_$i"
+        worker_ip=${!varname}
+        
+        if [ -n "$worker_ip" ]; then
+            echo -e "${BLUE}Testing SSH key on worker node $i (${worker_ip})...${NC}"
+            if ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o PasswordAuthentication=no -o PubkeyAuthentication=yes -i "$SSH_KEY" "$SSH_USER@$worker_ip" "echo 'Key works'" >/dev/null 2>&1; then
+                echo -e "${YELLOW}  SSH key doesn't work on worker node $i${NC}"
+                nodes_need_key+=("$worker_ip worker$i")
+            else
+                echo -e "${GREEN}  ✓ SSH key works on worker node $i${NC}"
+            fi
+        fi
+    done
+    
+    # If some nodes need the key, offer to distribute it
+    if [ ${#nodes_need_key[@]} -gt 0 ]; then
+        echo ""
+        echo -e "${YELLOW}SSH key authentication failed on ${#nodes_need_key[@]} node(s).${NC}"
+        echo -e "${BLUE}Would you like to distribute the SSH key to these nodes?${NC}"
+        echo -e "${YELLOW}This requires the SSH password for initial key distribution.${NC}"
+        read -p "Distribute SSH key to nodes that need it? (Y/n): " distribute_key
+        
+        if [[ -z "$distribute_key" || "$distribute_key" =~ ^[Yy] ]]; then
+            # Check for sshpass
+            if ! command -v sshpass >/dev/null 2>&1; then
+                echo -e "${YELLOW}Installing sshpass for key distribution...${NC}"
+                sudo apt update
+                sudo apt install -y sshpass
+                
+                if ! command -v sshpass >/dev/null 2>&1; then
+                    echo -e "${RED}Failed to install sshpass. Cannot distribute SSH keys.${NC}"
+                    exit 1
+                fi
+            fi
+            
+            # Get password for key distribution
+            echo -e "${BLUE}Enter SSH password for key distribution (used only once):${NC}"
+            read -s -p "Enter SSH password for user ${SSH_USER}: " ssh_password
+            echo
+            
+            # Distribute key to nodes that need it
+            for node_info in "${nodes_need_key[@]}"; do
+                node_ip=$(echo "$node_info" | cut -d' ' -f1)
+                node_name=$(echo "$node_info" | cut -d' ' -f2)
+                
+                echo -e "${BLUE}Distributing SSH key to ${node_name} (${node_ip})...${NC}"
+                distribute_ssh_key_to_node "$node_ip" "$ssh_password"
+            done
+            
+            # Test key-based authentication after distribution
+            echo -e "${BLUE}Testing key-based authentication after distribution...${NC}"
+            all_working=true
+            for node_info in "${nodes_need_key[@]}"; do
+                node_ip=$(echo "$node_info" | cut -d' ' -f1)
+                node_name=$(echo "$node_info" | cut -d' ' -f2)
+                
+                if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o PasswordAuthentication=no -o PubkeyAuthentication=yes -i "$SSH_KEY" "$SSH_USER@$node_ip" "echo 'Key works'" >/dev/null 2>&1; then
+                    echo -e "${GREEN}  ✓ SSH key now works on ${node_name}${NC}"
+                else
+                    echo -e "${RED}  ✗ SSH key still doesn't work on ${node_name}${NC}"
+                    all_working=false
+                fi
+            done
+            
+            if [ "$all_working" = true ]; then
+                echo -e "${GREEN}SSH key authentication is now working on all nodes!${NC}"
+                echo -e "${BLUE}All future operations will use SSH keys (no more passwords needed).${NC}"
+            else
+                echo -e "${YELLOW}Some nodes still don't have working SSH key authentication.${NC}"
+                read -p "Continue anyway? (y/N): " continue_anyway
+                if [[ ! "$continue_anyway" =~ ^[Yy] ]]; then
+                    echo "Aborting."
+                    exit 1
+                fi
+            fi
+            
+            # Clear the password variable for security
+            unset ssh_password
+        else
+            echo -e "${YELLOW}Continuing without distributing SSH key.${NC}"
+            echo -e "${YELLOW}Some operations may fail due to authentication issues.${NC}"
+        fi
+    else
+        echo -e "${GREEN}SSH key authentication is working on all nodes!${NC}"
     fi
 }
 
+distribute_ssh_key_to_node() {
+    local node_ip="$1"
+    local password="$2"
+    
+    echo -e "${BLUE}  Attempting SSH key distribution to ${node_ip}...${NC}"
+    
+    if [ ! -f "$SSH_PUB_KEY" ]; then
+        echo -e "${RED}  ✗ Public key file not found: $SSH_PUB_KEY${NC}"
+        exit 1
+    fi
+    
+    PUBLIC_KEY_CONTENT=$(cat "$SSH_PUB_KEY")
+    if [ -z "$PUBLIC_KEY_CONTENT" ]; then
+        echo -e "${RED}  ✗ Public key file is empty: $SSH_PUB_KEY${NC}"
+        exit 1
+    fi
+    
+    echo -e "${BLUE}    Trying ssh-copy-id...${NC}"
+    SSH_COPY_OUTPUT=$(SSHPASS="$password" sshpass -e ssh-copy-id -o StrictHostKeyChecking=no -i "$SSH_PUB_KEY" "$SSH_USER@$node_ip" 2>&1)
+    SSH_COPY_RESULT=$?
+    
+    if [ $SSH_COPY_RESULT -eq 0 ]; then
+        echo -e "${GREEN}    ✓ ssh-copy-id succeeded${NC}"
+        
+        echo -e "${BLUE}    Verifying key was added...${NC}"
+        if SSHPASS="$password" sshpass -e ssh -o StrictHostKeyChecking=no "$SSH_USER@$node_ip" "grep -q '$(echo "$PUBLIC_KEY_CONTENT" | cut -d' ' -f2)' ~/.ssh/authorized_keys 2>/dev/null" 2>/dev/null; then
+            echo -e "${GREEN}  ✓ SSH key verified in authorized_keys${NC}"
+            return 0
+        else
+            echo -e "${YELLOW}    ssh-copy-id reported success but key not found in authorized_keys${NC}"
+        fi
+    else
+        echo -e "${YELLOW}    ssh-copy-id failed: $SSH_COPY_OUTPUT${NC}"
+    fi
+    
+    echo -e "${BLUE}    Trying manual key installation...${NC}"
+    
+    TEMP_KEY_FILE="/tmp/tharnax_pubkey_$$"
+    
+    MANUAL_RESULT=$(SSHPASS="$password" sshpass -e ssh -o StrictHostKeyChecking=no "$SSH_USER@$node_ip" "
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+        
+        cat > '$TEMP_KEY_FILE' << 'EOF'
+$PUBLIC_KEY_CONTENT
+EOF
+        
+        if [ -f ~/.ssh/authorized_keys ]; then
+            KEY_FINGERPRINT=\$(echo '$PUBLIC_KEY_CONTENT' | cut -d' ' -f2)
+            if grep -q \"\$KEY_FINGERPRINT\" ~/.ssh/authorized_keys 2>/dev/null; then
+                echo 'Key already exists'
+                rm -f '$TEMP_KEY_FILE'
+                exit 0
+            fi
+        fi
+        
+        cat '$TEMP_KEY_FILE' >> ~/.ssh/authorized_keys
+        chmod 600 ~/.ssh/authorized_keys
+        rm -f '$TEMP_KEY_FILE'
+        
+        if grep -q \"\$(echo '$PUBLIC_KEY_CONTENT' | cut -d' ' -f2)\" ~/.ssh/authorized_keys 2>/dev/null; then
+            echo 'Key installation successful'
+        else
+            echo 'Key installation failed - not found in authorized_keys'
+            exit 1
+        fi
+    " 2>&1)
+    MANUAL_EXIT_CODE=$?
+    
+    if [ $MANUAL_EXIT_CODE -eq 0 ] && [[ "$MANUAL_RESULT" == *"Key installation successful"* || "$MANUAL_RESULT" == *"Key already exists"* ]]; then
+        echo -e "${GREEN}  ✓ SSH key manually installed to ${node_ip}${NC}"
+        
+        echo -e "${BLUE}    Final verification test...${NC}"
+        sleep 1
+        
+        if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o PasswordAuthentication=no -o PubkeyAuthentication=yes -i "$SSH_KEY" "$SSH_USER@$node_ip" "echo 'Key auth test successful'" >/dev/null 2>&1; then
+            echo -e "${GREEN}  ✓ SSH key authentication verified for ${node_ip}${NC}"
+            return 0
+        else
+            echo -e "${RED}  ✗ SSH key authentication test failed for ${node_ip}${NC}"
+            echo -e "${YELLOW}    Key was installed but authentication still not working${NC}"
+            return 1
+        fi
+    else
+        echo -e "${RED}  ✗ Manual SSH key installation failed for ${node_ip}${NC}"
+        echo -e "${YELLOW}    Output: $MANUAL_RESULT${NC}"
+        echo -e "${YELLOW}    Possible issues:${NC}"
+        echo -e "${YELLOW}    - SSH server doesn't allow public key authentication${NC}"
+        echo -e "${YELLOW}    - Incorrect password${NC}"
+        echo -e "${YELLOW}    - SSH server configuration prohibits key auth${NC}"
+        echo -e "${YELLOW}    - Target node filesystem issues${NC}"
+        return 1
+    fi
+}
+
+remove_ssh_keys_from_nodes() {
+    echo ""
+    echo -e "${BLUE}Removing SSH keys from all nodes...${NC}"
+    
+    if [ -z "$SSH_KEY" ] || [ ! -f "$SSH_KEY" ]; then
+        echo -e "${YELLOW}SSH key not found. Skipping key removal from nodes.${NC}"
+        return 0
+    fi
+    
+    # Get the public key content to remove
+    if [ ! -f "${SSH_KEY}.pub" ]; then
+        echo -e "${YELLOW}Public key file not found. Skipping key removal from nodes.${NC}"
+        return 0
+    fi
+    
+    PUBLIC_KEY_CONTENT=$(cat "${SSH_KEY}.pub" 2>/dev/null)
+    
+    if [ -z "$PUBLIC_KEY_CONTENT" ]; then
+        echo -e "${YELLOW}Could not read public key content. Skipping key removal from nodes.${NC}"
+        return 0
+    fi
+    
+    # Remove key from master node
+    echo -e "${BLUE}Removing SSH key from master node (${MASTER_IP})...${NC}"
+    remove_ssh_key_from_node "$MASTER_IP" "$PUBLIC_KEY_CONTENT"
+    
+    # Remove key from worker nodes
+    for ((i=1; i<=WORKER_COUNT; i++)); do
+        varname="WORKER_IP_$i"
+        worker_ip=${!varname}
+        
+        if [ -n "$worker_ip" ]; then
+            echo -e "${BLUE}Removing SSH key from worker node $i (${worker_ip})...${NC}"
+            remove_ssh_key_from_node "$worker_ip" "$PUBLIC_KEY_CONTENT"
+        fi
+    done
+    
+    echo -e "${GREEN}SSH key removal completed.${NC}"
+}
+
+remove_ssh_key_from_node() {
+    local node_ip="$1"
+    local public_key_content="$2"
+    
+    # Use SSH key to connect and remove the key from authorized_keys
+    if ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$SSH_USER@$node_ip" "
+        if [ -f ~/.ssh/authorized_keys ]; then
+            # Create a backup
+            cp ~/.ssh/authorized_keys ~/.ssh/authorized_keys.bak.tharnax
+            # Remove the specific key
+            grep -v '$public_key_content' ~/.ssh/authorized_keys > ~/.ssh/authorized_keys.tmp
+            mv ~/.ssh/authorized_keys.tmp ~/.ssh/authorized_keys
+            chmod 600 ~/.ssh/authorized_keys
+            echo 'SSH key removed from authorized_keys'
+        else
+            echo 'No authorized_keys file found'
+        fi
+    " >/dev/null 2>&1; then
+        echo -e "${GREEN}  ✓ SSH key removed from ${node_ip}${NC}"
+    else
+        echo -e "${YELLOW}  ⚠ Could not remove SSH key from ${node_ip} (node may be unreachable)${NC}"
+    fi
+}
+
+
+
 create_inventory() {
     echo ""
-    echo -e "${BLUE}Creating Ansible inventory...${NC}"
+        echo -e "${BLUE}Creating Ansible inventory...${NC}"
     
     cat > ansible/inventory.ini << EOF
 [master]
-master_node ansible_host=${MASTER_IP} ansible_user=${SSH_USER}
+master_node ansible_host=${MASTER_IP} ansible_user=${SSH_USER} ansible_ssh_private_key_file=${SSH_KEY}
 EOF
-
-    if [ "$AUTH_TYPE" = "key" ]; then
-        sed -i "s|ansible_user=${SSH_USER}|ansible_user=${SSH_USER} ansible_ssh_private_key_file=${SSH_KEY}|" ansible/inventory.ini
-    else
-        sed -i "s|ansible_user=${SSH_USER}|ansible_user=${SSH_USER} ansible_ssh_common_args='-o StrictHostKeyChecking=no'|" ansible/inventory.ini
-    fi
     
     echo -e "\n[workers]" >> ansible/inventory.ini
     
@@ -590,12 +919,7 @@ EOF
         worker_ip=${!varname}
         
         echo -e "Adding Worker $i (${GREEN}${worker_ip}${NC}) to inventory"
-        
-        if [ "$AUTH_TYPE" = "key" ]; then
             echo "worker${i} ansible_host=${worker_ip} ansible_user=${SSH_USER} ansible_ssh_private_key_file=${SSH_KEY}" >> ansible/inventory.ini
-        else
-            echo "worker${i} ansible_host=${worker_ip} ansible_user=${SSH_USER} ansible_ssh_common_args='-o StrictHostKeyChecking=no'" >> ansible/inventory.ini
-        fi
     done
     
     cat >> ansible/inventory.ini << EOF
@@ -817,23 +1141,44 @@ run_ansible() {
     echo ""
     echo -e "${BLUE}Running Ansible playbook...${NC}"
     
-    if [ "$AUTH_TYPE" = "password" ]; then
-        cd ansible
-        echo -e "${YELLOW}You will be prompted for the SSH password and the sudo password.${NC}"
-        echo -e "${YELLOW}If they are the same, just enter the same password twice.${NC}"
+    cd ansible
+    echo -e "${YELLOW}You will be prompted for the sudo password.${NC}"
+    echo -e "${BLUE}Note: When Ansible asks for 'BECOME password:', enter your sudo password.${NC}"
+    
+    # Run the entire playbook with sudo password prompting (SSH keys are used for authentication)
+    ansible-playbook -i inventory.ini playbook.yml --ask-become-pass
+    
+    cd ..
+}
+
+setup_kubeconfig() {
+    echo ""
+    echo -e "${BLUE}Setting up kubeconfig for kubectl access...${NC}"
+    
+    # Create .kube directory if it doesn't exist
+    mkdir -p ~/.kube
+    
+    # Copy K3s kubeconfig from master node
+    echo -e "${BLUE}Copying K3s kubeconfig from master node...${NC}"
+    if scp -o StrictHostKeyChecking=no -i "$SSH_KEY" "$SSH_USER@$MASTER_IP:/etc/rancher/k3s/k3s.yaml" ~/.kube/config; then
+        # Update the server URL in the kubeconfig to use the master IP
+        sed -i "s/127.0.0.1/$MASTER_IP/g" ~/.kube/config
+        chmod 600 ~/.kube/config
         
-        # Run the entire playbook with both SSH and sudo password prompting
-        ansible-playbook -i inventory.ini playbook.yml --ask-pass --ask-become-pass
+        echo -e "${GREEN}✓ Kubeconfig successfully copied and configured!${NC}"
+        echo -e "${BLUE}Testing kubectl access...${NC}"
         
-        cd ..
+        if kubectl get nodes >/dev/null 2>&1; then
+            echo -e "${GREEN}✓ kubectl is working correctly!${NC}"
+            kubectl get nodes
+        else
+            echo -e "${YELLOW}⚠ kubectl may need a moment to connect to the cluster${NC}"
+        fi
     else
-        cd ansible
-        echo -e "${YELLOW}You will be prompted for the sudo password.${NC}"
-        
-        # Run the entire playbook with sudo password prompting
-        ansible-playbook -i inventory.ini playbook.yml --ask-become-pass
-        
-        cd ..
+        echo -e "${YELLOW}⚠ Failed to copy kubeconfig from master node${NC}"
+        echo -e "${YELLOW}You can manually copy it later with:${NC}"
+        echo -e "${YELLOW}scp -i $SSH_KEY $SSH_USER@$MASTER_IP:/etc/rancher/k3s/k3s.yaml ~/.kube/config${NC}"
+        echo -e "${YELLOW}Then update the server URL: sed -i 's/127.0.0.1/$MASTER_IP/g' ~/.kube/config${NC}"
     fi
 }
 
@@ -1143,17 +1488,11 @@ configure_nfs_storage() {
         export NFS_PATH="$nfs_path"
         
         # Run only the NFS client and provisioner playbook
-        if [ "$AUTH_TYPE" = "password" ]; then
-            cd ansible
-            ansible-playbook -i inventory.ini nfs.yml --tags "client,provisioner" --ask-pass --ask-become-pass \
-                -e "nfs_server=$nfs_server_ip nfs_path=$nfs_path"
-            cd ..
-        else
-            cd ansible
-            ansible-playbook -i inventory.ini nfs.yml --tags "client,provisioner" --ask-become-pass \
-                -e "nfs_server=$nfs_server_ip nfs_path=$nfs_path"
-            cd ..
-        fi
+        cd ansible
+        echo -e "${BLUE}Note: When Ansible asks for 'BECOME password:', enter your sudo password.${NC}"
+        ansible-playbook -i inventory.ini nfs.yml --tags "client,provisioner" --ask-become-pass \
+            -e "nfs_server=$nfs_server_ip nfs_path=$nfs_path"
+        cd ..
     else
         # Set up a new NFS server on the master node
         echo -e "${BLUE}Setting up a new NFS server on the master node...${NC}"
@@ -1161,15 +1500,10 @@ configure_nfs_storage() {
         # First, run the storage information playbook
         echo -e "${BLUE}Collecting storage information from master node...${NC}"
         
-        if [ "$AUTH_TYPE" = "password" ]; then
-            cd ansible
-            ansible-playbook -i inventory.ini nfs.yml --tags "display" --ask-pass --ask-become-pass
-            cd ..
-        else
-            cd ansible
-            ansible-playbook -i inventory.ini nfs.yml --tags "display" --ask-become-pass
-            cd ..
-        fi
+        cd ansible
+        echo -e "${BLUE}Note: When Ansible asks for 'BECOME password:', enter your sudo password.${NC}"
+        ansible-playbook -i inventory.ini nfs.yml --tags "display" --ask-become-pass
+        cd ..
         
         # Ask if user wants to use a dedicated disk
         echo ""
@@ -1180,10 +1514,10 @@ configure_nfs_storage() {
             echo -e "${YELLOW}Do you want to use a dedicated disk for NFS storage?${NC}"
             echo "1) Yes, format and use a dedicated disk (recommended for production)"
             echo "2) No, use a directory on the system disk (simpler setup)"
-            read -p "Enter your choice [2]: " use_dedicated_disk
+            read -p "Enter your choice [1]: " use_dedicated_disk
             
             if [ -z "$use_dedicated_disk" ]; then
-                use_dedicated_disk="2"
+                use_dedicated_disk="1"
             fi
             
             if [ "$use_dedicated_disk" = "1" ]; then
@@ -1217,18 +1551,8 @@ configure_nfs_storage() {
                 # Safety check if disk is already mounted before formatting
                 echo -e "${BLUE}Checking if disk is already mounted...${NC}"
                 
-                # Handle different auth types for SSH commands
-                SSH_CHECK_CMD=""
-                
-                if [ "$AUTH_TYPE" = "password" ]; then
-                    echo -e "${YELLOW}Enter SSH password to check disk mount status:${NC}"
-                    read -s ssh_password
-                    echo
-                    
-                    SSH_CHECK_CMD="SSHPASS=\"$ssh_password\" sshpass -e ssh -o StrictHostKeyChecking=no \"$SSH_USER@$MASTER_IP\""
-                else
-                    SSH_CHECK_CMD="ssh -o StrictHostKeyChecking=no -i \"$SSH_KEY\" \"$SSH_USER@$MASTER_IP\""
-                fi
+                # Use SSH key for checking disk mount status
+                SSH_CHECK_CMD="ssh -o StrictHostKeyChecking=no -i \"$SSH_KEY\" \"$SSH_USER@$MASTER_IP\""
                 
                 # Check if the disk is mounted at target path
 is_mounted=$(eval "$SSH_CHECK_CMD \"findmnt -S $disk_device -T $nfs_local_path || echo 'Not mounted'\"" 2>/dev/null)
@@ -1277,19 +1601,12 @@ if [[ "$is_mounted" != *"Not mounted"* || "$has_parts" != *"Not mounted"* ]]; th
                 while [ $attempt -le $max_attempts ] && [ "$success" = "false" ]; do
                     echo -e "${YELLOW}Attempt $attempt of $max_attempts...${NC}"
                     
-                    if [ "$AUTH_TYPE" = "password" ]; then
-                        cd ansible
-                        ansible-playbook -i inventory.ini nfs.yml --tags "disk_prep" --ask-pass --ask-become-pass \
-                            -e "disk_device=$disk_device disk_mount_point=$nfs_local_path disk_should_format=true disk_create_partition=$create_partition"
-                        result=$?
-                        cd ..
-                    else
-                        cd ansible
-                        ansible-playbook -i inventory.ini nfs.yml --tags "disk_prep" --ask-become-pass \
-                            -e "disk_device=$disk_device disk_mount_point=$nfs_local_path disk_should_format=true disk_create_partition=$create_partition"
-                        result=$?
-                        cd ..
-                    fi
+                    cd ansible
+                    echo -e "${BLUE}Note: When Ansible asks for 'BECOME password:', enter your sudo password.${NC}"
+                    ansible-playbook -i inventory.ini nfs.yml --tags "disk_prep" --ask-become-pass \
+                        -e "disk_device=$disk_device disk_mount_point=$nfs_local_path disk_should_format=true disk_create_partition=$create_partition"
+                    result=$?
+                    cd ..
                     
                     if [ $result -eq 0 ]; then
                         success=true
@@ -1350,17 +1667,11 @@ if [[ "$is_mounted" != *"Not mounted"* || "$has_parts" != *"Not mounted"* ]]; th
         # Run the NFS server setup playbook
         echo -e "${BLUE}Configuring NFS server on master node with path: ${GREEN}$nfs_local_path${NC}"
         
-        if [ "$AUTH_TYPE" = "password" ]; then
-            cd ansible
-            ansible-playbook -i inventory.ini nfs.yml --tags "configure,client,provisioner" --ask-pass --ask-become-pass \
-                -e "nfs_export_path=$nfs_local_path nfs_path=$nfs_local_path"
-            cd ..
-        else
-            cd ansible
-            ansible-playbook -i inventory.ini nfs.yml --tags "configure,client,provisioner" --ask-become-pass \
-                -e "nfs_export_path=$nfs_local_path nfs_path=$nfs_local_path"
-            cd ..
-        fi
+        cd ansible
+        echo -e "${BLUE}Note: When Ansible asks for 'BECOME password:', enter your sudo password.${NC}"
+        ansible-playbook -i inventory.ini nfs.yml --tags "configure,client,provisioner" --ask-become-pass \
+            -e "nfs_export_path=$nfs_local_path nfs_path=$nfs_local_path"
+        cd ..
         
         if [ $? -ne 0 ]; then
             echo -e "${RED}Failed to configure NFS storage.${NC}"
@@ -1381,9 +1692,596 @@ if [[ "$is_mounted" != *"Not mounted"* || "$has_parts" != *"Not mounted"* ]]; th
     return 0
 }
 
+add_worker() {
+    echo -e "${BLUE}ADD WORKER MODE${NC}"
+    echo -e "${YELLOW}This will add a new worker node to your existing K3s cluster.${NC}"
+    
+    # Load existing configuration
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo -e "${RED}ERROR: No existing configuration found.${NC}"
+        echo -e "${YELLOW}You must first set up a K3s cluster before adding workers.${NC}"
+        echo -e "${YELLOW}Run the script without options to create a new cluster.${NC}"
+        exit 1
+    fi
+    
+    echo -e "${BLUE}Loading existing configuration...${NC}"
+    . "$CONFIG_FILE"
+    
+    # Set SSH public key path
+    if [ -n "$SSH_KEY" ]; then
+        SSH_PUB_KEY="${SSH_KEY}.pub"
+    fi
+    
+    # Verify K3s is running
+    if ! detect_k3s_installation; then
+        echo -e "${RED}ERROR: K3s cluster is not running on the master node.${NC}"
+        echo -e "${YELLOW}Please ensure your K3s cluster is healthy before adding workers.${NC}"
+        exit 1
+    fi
+    
+    echo -e "${GREEN}✓ Found existing K3s cluster with master at ${MASTER_IP}${NC}"
+    
+    # Get new worker details
+    echo ""
+    echo -e "${BLUE}Adding New Worker Node${NC}"
+    echo "--------------------------------"
+    
+    # Find the next worker number
+    NEXT_WORKER_NUM=$((WORKER_COUNT + 1))
+    
+    echo -e "This will be worker node ${GREEN}${NEXT_WORKER_NUM}${NC}"
+    
+    # Get new worker IP
+    IP_REGEX='^([0-9]{1,3}\.){3}[0-9]{1,3}$'
+    while true; do
+        read -p "Enter IP address for new worker node: " NEW_WORKER_IP
+        
+        if [[ $NEW_WORKER_IP =~ $IP_REGEX ]]; then
+            # Check if this IP is already in use
+            ip_in_use=false
+            
+            # Check master IP
+            if [ "$NEW_WORKER_IP" = "$MASTER_IP" ]; then
+                echo -e "${RED}Error: This IP is already used by the master node.${NC}"
+                ip_in_use=true
+            fi
+            
+            # Check existing worker IPs
+            for ((i=1; i<=WORKER_COUNT; i++)); do
+                varname="WORKER_IP_$i"
+                existing_ip=${!varname}
+                if [ "$NEW_WORKER_IP" = "$existing_ip" ]; then
+                    echo -e "${RED}Error: This IP is already used by worker node $i.${NC}"
+                    ip_in_use=true
+                    break
+                fi
+            done
+            
+            if [ "$ip_in_use" = false ]; then
+                break
+            fi
+        else
+            echo -e "${RED}Invalid IP address format. Please try again.${NC}"
+        fi
+    done
+    
+    echo -e "${GREEN}New worker IP: ${NEW_WORKER_IP}${NC}"
+    
+    # Test SSH connectivity
+    echo -e "${BLUE}Testing SSH connectivity to new worker...${NC}"
+    
+    # First test if SSH key works
+    if [ -n "$SSH_KEY" ] && [ -f "$SSH_KEY" ]; then
+        if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o PasswordAuthentication=no -o PubkeyAuthentication=yes -i "$SSH_KEY" "$SSH_USER@$NEW_WORKER_IP" "echo 'SSH key test successful'" >/dev/null 2>&1; then
+            echo -e "${GREEN}✓ SSH key authentication is working${NC}"
+        else
+            echo -e "${YELLOW}SSH key authentication failed. Attempting to distribute SSH key...${NC}"
+            
+            # Check for sshpass
+            if ! command -v sshpass >/dev/null 2>&1; then
+                echo -e "${YELLOW}Installing sshpass for key distribution...${NC}"
+                sudo apt update
+                sudo apt install -y sshpass
+            fi
+            
+            # Get password for key distribution
+            echo -e "${BLUE}Enter SSH password for the new worker node (used only once):${NC}"
+            read -s -p "Enter SSH password for user ${SSH_USER}: " ssh_password
+            echo
+            
+            # Test password authentication first
+            if ! SSHPASS="$ssh_password" sshpass -e ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$SSH_USER@$NEW_WORKER_IP" "echo 'SSH connection successful'" >/dev/null 2>&1; then
+                echo -e "${RED}Failed to connect to new worker node ${NEW_WORKER_IP} with provided credentials.${NC}"
+                echo -e "${YELLOW}Please verify:${NC}"
+                echo -e "${YELLOW}  - The IP address is correct${NC}"
+                echo -e "${YELLOW}  - The username is correct${NC}"
+                echo -e "${YELLOW}  - The password is correct${NC}"
+                echo -e "${YELLOW}  - SSH is enabled on the target node${NC}"
+                exit 1
+            fi
+            
+            # Distribute SSH key
+            echo -e "${BLUE}Distributing SSH key to new worker...${NC}"
+            if distribute_ssh_key_to_node "$NEW_WORKER_IP" "$ssh_password"; then
+                echo -e "${GREEN}✓ SSH key distribution and verification successful${NC}"
+            else
+                echo -e "${RED}✗ SSH key distribution failed${NC}"
+                echo -e "${YELLOW}Troubleshooting suggestions:${NC}"
+                echo -e "${YELLOW}  1. Check SSH service configuration on target node:${NC}"
+                echo -e "${YELLOW}     ssh $SSH_USER@$NEW_WORKER_IP 'sudo grep -E \"PubkeyAuthentication|PasswordAuthentication\" /etc/ssh/sshd_config'${NC}"
+                echo -e "${YELLOW}  2. Verify SSH allows key-based authentication (should be 'yes'):${NC}"
+                echo -e "${YELLOW}     PubkeyAuthentication yes${NC}"
+                echo -e "${YELLOW}  3. Restart SSH service on target node if needed:${NC}"
+                echo -e "${YELLOW}     ssh $SSH_USER@$NEW_WORKER_IP 'sudo systemctl restart ssh'${NC}"
+                echo -e "${YELLOW}  4. Try manual SSH test: ssh -i $SSH_KEY $SSH_USER@$NEW_WORKER_IP${NC}"
+                
+                read -p "Continue anyway? (y/N): " continue_anyway
+                if [[ ! "$continue_anyway" =~ ^[Yy] ]]; then
+                    echo -e "${RED}Aborting worker addition.${NC}"
+                    exit 1
+                fi
+            fi
+            
+            # Clear password for security
+            unset ssh_password
+        fi
+    else
+        echo -e "${RED}SSH key not found. Cannot proceed without SSH key authentication.${NC}"
+        exit 1
+    fi
+    
+    # Update configuration
+    WORKER_COUNT=$NEXT_WORKER_NUM
+    eval "WORKER_IP_$NEXT_WORKER_NUM=\"$NEW_WORKER_IP\""
+    
+    # Save updated configuration
+    save_config
+    
+    # Create updated inventory
+    echo -e "${BLUE}Updating Ansible inventory...${NC}"
+    create_inventory
+    
+    # Create a playbook specifically for adding a worker
+    echo -e "${BLUE}Creating worker addition playbook...${NC}"
+    mkdir -p ansible/add-worker
+    
+    cat > ansible/add-worker/add-worker.yml << EOF
+---
+# Playbook for adding a new worker to existing K3s cluster
+
+- name: Preflight Check - Verify new worker is reachable
+  hosts: worker${NEXT_WORKER_NUM}
+  gather_facts: no
+  tags: preflight
+  tasks:
+    - name: Check if new worker is reachable
+      ping:
+      register: ping_result
+      ignore_errors: yes
+
+    - name: Fail if new worker is unreachable
+      fail:
+        msg: "New worker {{ inventory_hostname }} ({{ ansible_host }}) is unreachable. Please check connectivity and SSH configuration."
+      when: ping_result.failed
+
+- name: Get K3s token from master
+  hosts: master
+  become: true
+  tasks:
+    - name: Read K3s token
+      slurp:
+        src: /var/lib/rancher/k3s/server/node-token
+      register: k3s_token_b64
+
+    - name: Set facts for k3s installation
+      set_fact:
+        k3s_token: "{{ k3s_token_b64.content | b64decode | trim }}"
+        master_ip: "{{ hostvars[inventory_hostname]['ansible_host'] }}"
+
+- name: Install K3s on New Worker Node
+  hosts: worker${NEXT_WORKER_NUM}
+  become: true
+  tasks:
+    - name: Check if K3s is already installed
+      stat:
+        path: /usr/local/bin/k3s
+      register: k3s_binary
+
+    - name: Check if K3s agent is running
+      shell: "systemctl is-active k3s-agent.service || echo 'not-running'"
+      register: k3s_agent_service_status
+      changed_when: false
+      failed_when: false
+
+    - name: Get facts from master node
+      set_fact:
+        k3s_token: "{{ hostvars[groups['master'][0]]['k3s_token'] }}"
+        master_ip: "{{ hostvars[groups['master'][0]]['master_ip'] }}"
+
+    - name: Ensure token and master IP are available (debugging)
+      debug:
+        msg: "Installing K3s agent connecting to {{ master_ip }} with token {{ k3s_token[:5] }}..."
+
+    - name: Install K3s as agent (worker)
+      shell: >
+        curl -sfL https://get.k3s.io | 
+        K3S_URL=https://{{ master_ip }}:6443 
+        K3S_TOKEN={{ k3s_token }} 
+        sh -s -
+      register: k3s_agent_install
+      async: 600
+      poll: 15
+      when: not k3s_binary.stat.exists or k3s_agent_service_status.stdout == 'not-running'
+
+    - name: Display K3s agent installation result
+      debug:
+        var: k3s_agent_install
+      when: k3s_agent_install is defined and k3s_agent_install.changed
+
+    - name: Wait for agent to register with server
+      wait_for:
+        path: /var/lib/rancher/k3s/agent/kubelet.kubeconfig
+        state: present
+        delay: 5
+        timeout: 60
+      ignore_errors: true
+
+    - name: Verify K3s agent service status
+      shell: "systemctl status k3s-agent.service"
+      register: agent_status
+      changed_when: false
+      failed_when: false
+      ignore_errors: true
+
+    - name: Show agent status
+      debug:
+        var: agent_status.stdout_lines
+      when: agent_status is defined
+EOF
+    
+    # Final connectivity test before running Ansible
+    echo -e "${BLUE}Performing final connectivity test...${NC}"
+    if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "$SSH_KEY" "$SSH_USER@$NEW_WORKER_IP" "echo 'Final connectivity test passed'" >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ Final connectivity test passed${NC}"
+    else
+        echo -e "${RED}✗ Final connectivity test failed${NC}"
+        echo -e "${YELLOW}SSH connection to $NEW_WORKER_IP is not working.${NC}"
+        echo -e "${YELLOW}Please verify SSH connectivity before proceeding.${NC}"
+        
+        echo -e "${BLUE}Debug information:${NC}"
+        echo -e "${YELLOW}  SSH Key: $SSH_KEY${NC}"
+        echo -e "${YELLOW}  Target: $SSH_USER@$NEW_WORKER_IP${NC}"
+        echo -e "${YELLOW}  Manual test: ssh -i $SSH_KEY $SSH_USER@$NEW_WORKER_IP${NC}"
+        
+        read -p "Try to continue with Ansible anyway? (y/N): " force_continue
+        if [[ ! "$force_continue" =~ ^[Yy] ]]; then
+            echo -e "${RED}Worker addition cancelled.${NC}"
+            # Revert configuration changes
+            WORKER_COUNT=$((WORKER_COUNT - 1))
+            unset "WORKER_IP_$NEXT_WORKER_NUM"
+            save_config
+            create_inventory
+            exit 1
+        fi
+    fi
+
+    # Run the worker addition playbook
+    echo -e "${BLUE}Adding new worker to the cluster...${NC}"
+    cd ansible
+    echo -e "${BLUE}Note: When Ansible asks for 'BECOME password:', enter your sudo password.${NC}"
+    ansible-playbook -i inventory.ini add-worker/add-worker.yml --ask-become-pass
+    
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}✓ New worker node added successfully!${NC}"
+        cd ..
+        
+        # Verify the new node is in the cluster
+        echo -e "${BLUE}Verifying new worker is in the cluster...${NC}"
+        if command -v kubectl >/dev/null 2>&1; then
+            sleep 10  # Give the node a moment to register
+            echo -e "${BLUE}Current cluster nodes:${NC}"
+            kubectl get nodes
+            
+            # Check if our new node appears
+            if kubectl get nodes | grep -q "$NEW_WORKER_IP"; then
+                echo -e "${GREEN}✓ New worker node is visible in the cluster!${NC}"
+            else
+                echo -e "${YELLOW}⚠ New worker node may still be registering. Check again in a few minutes.${NC}"
+            fi
+        fi
+        
+        echo ""
+        echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${GREEN}║              🚀 Worker Node Added Successfully! 🚀           ║${NC}"
+        echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        echo -e "${BLUE}Cluster now has ${GREEN}${WORKER_COUNT}${NC}${BLUE} worker nodes.${NC}"
+        echo -e "${BLUE}New worker: ${GREEN}worker${NEXT_WORKER_NUM}${NC}${BLUE} (${GREEN}${NEW_WORKER_IP}${NC}${BLUE})${NC}"
+        
+    else
+        echo -e "${RED}Failed to add new worker node.${NC}"
+        echo -e "${YELLOW}Check the Ansible output above for details.${NC}"
+        
+        # Revert configuration changes
+        WORKER_COUNT=$((WORKER_COUNT - 1))
+        unset "WORKER_IP_$NEXT_WORKER_NUM"
+        save_config
+        create_inventory
+        
+        cd ..
+        exit 1
+    fi
+}
+
+remove_worker() {
+    echo -e "${RED}REMOVE WORKER MODE${NC}"
+    echo -e "${YELLOW}This will safely remove a worker node from your K3s cluster.${NC}"
+    
+    # Load existing configuration
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo -e "${RED}ERROR: No existing configuration found.${NC}"
+        echo -e "${YELLOW}You must first set up a K3s cluster before removing workers.${NC}"
+        exit 1
+    fi
+    
+    echo -e "${BLUE}Loading existing configuration...${NC}"
+    . "$CONFIG_FILE"
+    
+    # Set SSH public key path
+    if [ -n "$SSH_KEY" ]; then
+        SSH_PUB_KEY="${SSH_KEY}.pub"
+    fi
+    
+    # Verify K3s is running
+    if ! detect_k3s_installation; then
+        echo -e "${RED}ERROR: K3s cluster is not running on the master node.${NC}"
+        echo -e "${YELLOW}Please ensure your K3s cluster is healthy before removing workers.${NC}"
+        exit 1
+    fi
+    
+    # Check if there are any workers to remove
+    if [ "$WORKER_COUNT" -eq 0 ]; then
+        echo -e "${YELLOW}No worker nodes configured to remove.${NC}"
+        exit 0
+    fi
+    
+    echo -e "${GREEN}✓ Found existing K3s cluster with master at ${MASTER_IP}${NC}"
+    
+    # Display current workers
+    echo ""
+    echo -e "${BLUE}Current Worker Nodes${NC}"
+    echo "--------------------------------"
+    
+    # Build arrays of worker info
+    declare -a WORKER_IPS_ARRAY
+    declare -a WORKER_NUMBERS
+    
+    for ((i=1; i<=WORKER_COUNT; i++)); do
+        varname="WORKER_IP_$i"
+        worker_ip=${!varname}
+        if [ -n "$worker_ip" ]; then
+            WORKER_IPS_ARRAY[${#WORKER_IPS_ARRAY[@]}]="$worker_ip"
+            WORKER_NUMBERS[${#WORKER_NUMBERS[@]}]="$i"
+            echo -e "${GREEN}$i)${NC} worker$i (${GREEN}${worker_ip}${NC})"
+        fi
+    done
+    
+    # Show current cluster status
+    echo ""
+    echo -e "${BLUE}Current cluster nodes:${NC}"
+    if command -v kubectl >/dev/null 2>&1; then
+        kubectl get nodes
+    else
+        echo -e "${YELLOW}kubectl not available - cannot show cluster status${NC}"
+    fi
+    
+    # Select worker to remove
+    echo ""
+    echo -e "${BLUE}Select worker node to remove:${NC}"
+    read -p "Enter worker number to remove (1-${WORKER_COUNT}): " WORKER_TO_REMOVE
+    
+    # Validate selection
+    if ! [[ "$WORKER_TO_REMOVE" =~ ^[0-9]+$ ]] || [ "$WORKER_TO_REMOVE" -lt 1 ] || [ "$WORKER_TO_REMOVE" -gt "$WORKER_COUNT" ]; then
+        echo -e "${RED}Invalid worker number. Must be between 1 and ${WORKER_COUNT}.${NC}"
+        exit 1
+    fi
+    
+    # Get worker details
+    varname="WORKER_IP_$WORKER_TO_REMOVE"
+    WORKER_IP_TO_REMOVE=${!varname}
+    
+    if [ -z "$WORKER_IP_TO_REMOVE" ]; then
+        echo -e "${RED}Worker $WORKER_TO_REMOVE not found in configuration.${NC}"
+        exit 1
+    fi
+    
+    WORKER_NAME="worker${WORKER_TO_REMOVE}"
+    
+    echo ""
+    echo -e "${RED}⚠️  WARNING: This will remove worker node ${WORKER_NAME} (${WORKER_IP_TO_REMOVE})${NC}"
+    echo -e "${YELLOW}This action will:${NC}"
+    echo -e "${YELLOW}  1. Drain the worker node (move all workloads to other nodes)${NC}"
+    echo -e "${YELLOW}  2. Remove the node from the Kubernetes cluster${NC}"
+    echo -e "${YELLOW}  3. Uninstall K3s from the worker node${NC}"
+    echo -e "${YELLOW}  4. Remove SSH keys from the worker node${NC}"
+    echo -e "${YELLOW}  5. Update the cluster configuration${NC}"
+    echo ""
+    read -p "Are you sure you want to remove worker ${WORKER_NAME}? Type 'YES' to confirm: " confirm
+    
+    if [ "$confirm" != "YES" ]; then
+        echo -e "${YELLOW}Worker removal cancelled.${NC}"
+        exit 0
+    fi
+    
+    # Test SSH connectivity to the worker
+    echo -e "${BLUE}Testing SSH connectivity to worker ${WORKER_NAME}...${NC}"
+    if [ -n "$SSH_KEY" ] && [ -f "$SSH_KEY" ]; then
+        if ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "$SSH_KEY" "$SSH_USER@$WORKER_IP_TO_REMOVE" "echo 'SSH test successful'" >/dev/null 2>&1; then
+            echo -e "${YELLOW}⚠️  Cannot connect to worker ${WORKER_NAME} via SSH.${NC}"
+            echo -e "${YELLOW}The node will be removed from the cluster, but K3s may not be uninstalled from the node.${NC}"
+            read -p "Continue anyway? (y/N): " continue_anyway
+            if [[ ! "$continue_anyway" =~ ^[Yy] ]]; then
+                echo -e "${YELLOW}Worker removal cancelled.${NC}"
+                exit 0
+            fi
+            SSH_ACCESSIBLE=false
+        else
+            echo -e "${GREEN}✓ SSH connectivity verified${NC}"
+            SSH_ACCESSIBLE=true
+        fi
+    else
+        echo -e "${YELLOW}⚠️  SSH key not found. Cannot access worker node for cleanup.${NC}"
+        SSH_ACCESSIBLE=false
+    fi
+    
+    # Step 1: Drain the worker node
+    echo ""
+    echo -e "${BLUE}Step 1: Draining worker node ${WORKER_NAME}...${NC}"
+    if command -v kubectl >/dev/null 2>&1; then
+        # First cordon the node
+        if kubectl cordon "$WORKER_NAME" >/dev/null 2>&1; then
+            echo -e "${GREEN}✓ Node ${WORKER_NAME} cordoned${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Could not cordon node ${WORKER_NAME} (may not be in cluster)${NC}"
+        fi
+        
+        # Then drain the node
+        echo -e "${BLUE}Draining workloads from ${WORKER_NAME}...${NC}"
+        if kubectl drain "$WORKER_NAME" --ignore-daemonsets --delete-emptydir-data --force --timeout=300s >/dev/null 2>&1; then
+            echo -e "${GREEN}✓ Node ${WORKER_NAME} drained successfully${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Node drain completed with warnings (this is often normal)${NC}"
+        fi
+    else
+        echo -e "${YELLOW}⚠️  kubectl not available - skipping node drain${NC}"
+    fi
+    
+    # Step 2: Remove node from cluster
+    echo ""
+    echo -e "${BLUE}Step 2: Removing node from cluster...${NC}"
+    if command -v kubectl >/dev/null 2>&1; then
+        if kubectl delete node "$WORKER_NAME" >/dev/null 2>&1; then
+            echo -e "${GREEN}✓ Node ${WORKER_NAME} removed from cluster${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Could not remove node ${WORKER_NAME} from cluster (may not exist)${NC}"
+        fi
+    else
+        echo -e "${YELLOW}⚠️  kubectl not available - cannot remove node from cluster${NC}"
+    fi
+    
+    # Step 3: Uninstall K3s from worker (if accessible)
+    if [ "$SSH_ACCESSIBLE" = true ]; then
+        echo ""
+        echo -e "${BLUE}Step 3: Uninstalling K3s from worker node...${NC}"
+        
+        # Create a simple uninstall playbook for this specific worker
+        mkdir -p ansible/remove-worker
+        
+        cat > ansible/remove-worker/remove-worker.yml << EOF
+---
+- name: Uninstall K3s from worker node
+  hosts: ${WORKER_NAME}
+  become: true
+  tasks:
+    - name: Check if K3s agent uninstall script exists
+      stat:
+        path: /usr/local/bin/k3s-agent-uninstall.sh
+      register: k3s_agent_uninstall_script
+    
+    - name: Check if K3s uninstall script exists
+      stat:
+        path: /usr/local/bin/k3s-uninstall.sh
+      register: k3s_uninstall_script
+    
+    - name: Run K3s agent uninstall script if exists
+      command: /usr/local/bin/k3s-agent-uninstall.sh
+      when: k3s_agent_uninstall_script.stat.exists
+      ignore_errors: yes
+    
+    - name: Run K3s uninstall script if exists
+      command: /usr/local/bin/k3s-uninstall.sh
+      when: k3s_uninstall_script.stat.exists
+      ignore_errors: yes
+    
+    - name: Remove K3s data directories
+      file:
+        path: "{{ item }}"
+        state: absent
+      with_items:
+        - /var/lib/rancher/k3s
+        - /etc/rancher/k3s
+        - /var/lib/kubelet
+      ignore_errors: yes
+EOF
+        
+        # Run the uninstall playbook
+        cd ansible
+        echo -e "${BLUE}Note: When Ansible asks for 'BECOME password:', enter your sudo password.${NC}"
+        if ansible-playbook -i inventory.ini remove-worker/remove-worker.yml --ask-become-pass; then
+            echo -e "${GREEN}✓ K3s uninstalled from worker node${NC}"
+        else
+            echo -e "${YELLOW}⚠️  K3s uninstall completed with warnings${NC}"
+        fi
+        cd ..
+    else
+        echo ""
+        echo -e "${YELLOW}Step 3: Skipping K3s uninstall (worker not accessible via SSH)${NC}"
+    fi
+    
+    # Step 4: Remove SSH keys from worker (if accessible)
+    if [ "$SSH_ACCESSIBLE" = true ] && [ -n "$SSH_KEY" ] && [ -f "${SSH_KEY}.pub" ]; then
+        echo ""
+        echo -e "${BLUE}Step 4: Removing SSH keys from worker node...${NC}"
+        remove_ssh_key_from_node "$WORKER_IP_TO_REMOVE" "$(cat "${SSH_KEY}.pub")"
+    else
+        echo ""
+        echo -e "${YELLOW}Step 4: Skipping SSH key removal (worker not accessible or key not found)${NC}"
+    fi
+    
+    # Step 5: Update configuration
+    echo ""
+    echo -e "${BLUE}Step 5: Updating cluster configuration...${NC}"
+    
+    # Remove the worker from configuration by shifting remaining workers
+    for ((i=WORKER_TO_REMOVE; i<WORKER_COUNT; i++)); do
+        next_worker=$((i+1))
+        varname_current="WORKER_IP_$i"
+        varname_next="WORKER_IP_$next_worker"
+        eval "$varname_current=\"\${$varname_next}\""
+    done
+    
+    # Unset the last worker variable
+    unset "WORKER_IP_$WORKER_COUNT"
+    
+    # Decrease worker count
+    WORKER_COUNT=$((WORKER_COUNT-1))
+    
+    # Save updated configuration
+    save_config
+    
+    # Recreate inventory
+    echo -e "${BLUE}Updating Ansible inventory...${NC}"
+    create_inventory
+    
+    echo ""
+    echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║              🗑️  Worker Node Removed Successfully! 🗑️        ║${NC}"
+    echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${BLUE}Cluster now has ${GREEN}${WORKER_COUNT}${NC}${BLUE} worker nodes.${NC}"
+    echo -e "${BLUE}Removed: ${RED}${WORKER_NAME}${NC}${BLUE} (${RED}${WORKER_IP_TO_REMOVE}${NC}${BLUE})${NC}"
+    
+    # Show updated cluster status
+    if command -v kubectl >/dev/null 2>&1; then
+        echo ""
+        echo -e "${BLUE}Updated cluster nodes:${NC}"
+        kubectl get nodes
+    fi
+}
+
 uninstall() {
     echo -e "${RED}UNINSTALL MODE${NC}"
-    echo -e "${YELLOW}This will uninstall K3s from all nodes and clean up Tharnax files.${NC}"
+    echo -e "${YELLOW}This will uninstall K3s from all nodes, remove SSH keys, and clean up Tharnax files.${NC}"
     echo -e "${YELLOW}System packages like curl will remain installed.${NC}"
     echo -e "${YELLOW}Please confirm this action.${NC}"
     read -p "Are you sure you want to uninstall? (yes/No): " confirm
@@ -1407,9 +2305,9 @@ uninstall() {
     fi
     
     if [ -n "$MASTER_IP" ]; then
-        echo -e "${BLUE}Creating an uninstall playbook...${NC}"
+                mkdir -p ansible/uninstall
         
-        mkdir -p ansible/uninstall
+        echo -e "${BLUE}Creating an uninstall playbook...${NC}"
         
         cat > ansible/uninstall/uninstall.yml << EOF
 ---
@@ -1451,18 +2349,28 @@ uninstall() {
 EOF
         
         echo -e "${BLUE}Running uninstall playbook...${NC}"
-        if [ "$AUTH_TYPE" = "password" ]; then
-            cd ansible
-            echo -e "${YELLOW}You will be prompted for the SSH password and the sudo password.${NC}"
-            echo -e "${YELLOW}If they are the same, just enter the same password twice.${NC}"
-            ansible-playbook -i inventory.ini uninstall/uninstall.yml --ask-pass --ask-become-pass
-            cd ..
+        cd ansible
+        echo -e "${YELLOW}You will be prompted for the sudo password.${NC}"
+        echo -e "${BLUE}Note: When Ansible asks for 'BECOME password:', enter your sudo password.${NC}"
+        
+        # Run the playbook with SSH key authentication
+        ansible-playbook -i inventory.ini uninstall/uninstall.yml --ask-become-pass
+        ANSIBLE_RESULT=$?
+        
+        cd ..
+        
+        if [ $ANSIBLE_RESULT -ne 0 ]; then
+            echo -e "${YELLOW}Warning: Ansible playbook execution failed. Some components may not have been uninstalled properly.${NC}"
+            echo -e "${YELLOW}You may need to manually uninstall K3s on the nodes.${NC}"
         else
-            cd ansible
-            echo -e "${YELLOW}You will be prompted for the sudo password.${NC}"
-            ansible-playbook -i inventory.ini uninstall/uninstall.yml --ask-become-pass
-            cd ..
+            echo -e "${GREEN}K3s uninstalled successfully from all nodes.${NC}"
         fi
+    fi
+    
+    # Remove SSH keys from nodes after uninstalling K3s
+    if [ -n "$MASTER_IP" ] && [ -n "$SSH_KEY" ] && [ -f "$SSH_KEY" ]; then
+        echo -e "${BLUE}Removing SSH keys from nodes...${NC}"
+        remove_ssh_keys_from_nodes
     fi
     
     echo -e "${BLUE}Cleaning up local files...${NC}"
@@ -1480,6 +2388,19 @@ EOF
         fi
     done
     
+    # Ask about removing the SSH key files
+    if [ -n "$SSH_KEY" ] && [ -f "$SSH_KEY" ]; then
+        echo -e "${YELLOW}Do you want to remove the SSH key files created by Tharnax?${NC}"
+        echo -e "${YELLOW}SSH key: ${SSH_KEY}${NC}"
+        echo -e "${YELLOW}Public key: ${SSH_KEY}.pub${NC}"
+        read -p "Remove SSH key files? (y/N): " remove_ssh_keys
+        if [[ "$remove_ssh_keys" =~ ^[Yy] ]]; then
+            echo "Removing SSH key files..."
+            rm -f "$SSH_KEY" "${SSH_KEY}.pub"
+            echo -e "${GREEN}SSH key files removed.${NC}"
+        fi
+    fi
+    
     echo -e "${YELLOW}Do you want to remove packages installed by Tharnax?${NC}"
     echo -e "${YELLOW}This will remove Ansible and sshpass, but NOT curl.${NC}"
     read -p "Remove Ansible and sshpass? (y/N): " remove_packages
@@ -1493,16 +2414,14 @@ EOF
 
 check_existing_k3s() {
     echo -e "${BLUE}Checking for existing K3s installation...${NC}"
-# First try local check if we're on the master node
+    
 if command -v kubectl >/dev/null 2>&1; then
     if kubectl get nodes >/dev/null 2>&1; then
         node_count=$(kubectl get nodes 2>/dev/null | grep -v NAME | wc -l)
         
-        # We expect at least 1 node (the master)
         if [ "$node_count" -ge 1 ]; then
             echo -e "${GREEN}K3s is already installed and running.${NC}"
             
-            # Display the nodes
             echo -e "${BLUE}Current cluster nodes:${NC}"
             kubectl get nodes 2>/dev/null
             
@@ -1511,44 +2430,13 @@ if command -v kubectl >/dev/null 2>&1; then
     fi
 fi
 
-# If local check failed, try SSH check 
-    
-    if [ "$AUTH_TYPE" = "password" ]; then
-        # Use sshpass for password authentication
-        if ! command -v sshpass >/dev/null 2>&1; then
-            echo -e "${YELLOW}Warning: sshpass is required for checking K3s with password auth.${NC}"
-            echo -e "${YELLOW}Assuming K3s is not installed.${NC}"
-            return 1
-        fi
-        
-        echo -e "${YELLOW}Enter SSH password to check K3s status:${NC}"
-        read -s ssh_password
-        echo
-        
-        if SSHPASS="$ssh_password" sshpass -e ssh -o StrictHostKeyChecking=no "$SSH_USER@$MASTER_IP" "command -v kubectl && kubectl get nodes" &>/dev/null; then
-            node_count=$(SSHPASS="$ssh_password" sshpass -e ssh -o StrictHostKeyChecking=no "$SSH_USER@$MASTER_IP" "kubectl get nodes" 2>/dev/null | grep -v NAME | wc -l)
-            
-            # We expect at least 1 node (the master)
-            if [ "$node_count" -ge 1 ]; then
-                echo -e "${GREEN}K3s is already installed and running.${NC}"
-                
-                # Display the nodes
-                echo -e "${BLUE}Current cluster nodes:${NC}"
-                SSHPASS="$ssh_password" sshpass -e ssh -o StrictHostKeyChecking=no "$SSH_USER@$MASTER_IP" "kubectl get nodes" 2>/dev/null
-                
-                return 0
-            fi
-        fi
-    else
-        # Use SSH key authentication
+    if [ -n "$SSH_KEY" ] && [ -f "$SSH_KEY" ]; then
         if ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$SSH_USER@$MASTER_IP" "command -v kubectl && kubectl get nodes" &>/dev/null; then
             node_count=$(ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$SSH_USER@$MASTER_IP" "kubectl get nodes" 2>/dev/null | grep -v NAME | wc -l)
             
-            # We expect at least 1 node (the master)
             if [ "$node_count" -ge 1 ]; then
                 echo -e "${GREEN}K3s is already installed and running.${NC}"
                 
-                # Display the nodes
                 echo -e "${BLUE}Current cluster nodes:${NC}"
                 ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$SSH_USER@$MASTER_IP" "kubectl get nodes" 2>/dev/null
                 
@@ -1571,6 +2459,16 @@ mkdir -p ansible/roles/k3s-master ansible/roles/k3s-agent
 
 if [ "$UNINSTALL_MODE" = true ]; then
     uninstall
+    exit 0
+fi
+
+if [ "$ADD_WORKER_MODE" = true ]; then
+    add_worker
+    exit 0
+fi
+
+if [ "$REMOVE_WORKER_MODE" = true ]; then
+    remove_worker
     exit 0
 fi
 
@@ -1597,7 +2495,6 @@ if [ "$COMPONENT_K3S" = false ]; then
         echo -e "${BLUE}Collecting required connection information...${NC}"
         detect_master_ip
         collect_ssh_info
-        check_sshpass
     fi
     
     if ! detect_k3s_installation; then
@@ -1620,8 +2517,6 @@ else
     collect_worker_info
     echo -e "${BLUE}Starting SSH configuration...${NC}"
     collect_ssh_info
-    echo -e "${BLUE}Checking for sshpass...${NC}"
-    check_sshpass
     echo -e "${BLUE}Creating inventory...${NC}"
     create_inventory
     echo -e "${BLUE}Checking for Ansible...${NC}"
@@ -1640,6 +2535,11 @@ if detect_k3s_installation; then
     k3s_installed=true
     echo -e "${GREEN}✓ K3s is already installed and running!${NC}"
     echo -e "${YELLOW}Proceeding with additional component installation.${NC}"
+    
+    # Ensure kubeconfig is set up for existing installations
+    if [ ! -f ~/.kube/config ] || ! kubectl get nodes >/dev/null 2>&1; then
+        setup_kubeconfig
+    fi
 else
     echo -e "${YELLOW}Ready to run Ansible playbook to deploy K3s.${NC}"
     read -p "Proceed with deployment? (Y/n): " proceed
@@ -1649,6 +2549,7 @@ else
         if [ $? -eq 0 ]; then
             echo -e "${GREEN}K3s installation complete!${NC}"
             mark_component_installed "k3s"
+            setup_kubeconfig
         else
             echo -e "${RED}K3s installation failed!${NC}"
             exit 1

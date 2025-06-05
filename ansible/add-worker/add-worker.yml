@@ -1,0 +1,91 @@
+---
+# Playbook for adding a new worker to existing K3s cluster
+
+- name: Preflight Check - Verify new worker is reachable
+  hosts: worker2
+  gather_facts: no
+  tags: preflight
+  tasks:
+    - name: Check if new worker is reachable
+      ping:
+      register: ping_result
+      ignore_errors: yes
+
+    - name: Fail if new worker is unreachable
+      fail:
+        msg: "New worker {{ inventory_hostname }} ({{ ansible_host }}) is unreachable. Please check connectivity and SSH configuration."
+      when: ping_result.failed
+
+- name: Get K3s token from master
+  hosts: master
+  become: true
+  tasks:
+    - name: Read K3s token
+      slurp:
+        src: /var/lib/rancher/k3s/server/node-token
+      register: k3s_token_b64
+
+    - name: Set facts for k3s installation
+      set_fact:
+        k3s_token: "{{ k3s_token_b64.content | b64decode | trim }}"
+        master_ip: "{{ hostvars[inventory_hostname]['ansible_host'] }}"
+
+- name: Install K3s on New Worker Node
+  hosts: worker2
+  become: true
+  tasks:
+    - name: Check if K3s is already installed
+      stat:
+        path: /usr/local/bin/k3s
+      register: k3s_binary
+
+    - name: Check if K3s agent is running
+      shell: "systemctl is-active k3s-agent.service || echo 'not-running'"
+      register: k3s_agent_service_status
+      changed_when: false
+      failed_when: false
+
+    - name: Get facts from master node
+      set_fact:
+        k3s_token: "{{ hostvars[groups['master'][0]]['k3s_token'] }}"
+        master_ip: "{{ hostvars[groups['master'][0]]['master_ip'] }}"
+
+    - name: Ensure token and master IP are available (debugging)
+      debug:
+        msg: "Installing K3s agent connecting to {{ master_ip }} with token {{ k3s_token[:5] }}..."
+
+    - name: Install K3s as agent (worker)
+      shell: >
+        curl -sfL https://get.k3s.io | 
+        K3S_URL=https://{{ master_ip }}:6443 
+        K3S_TOKEN={{ k3s_token }} 
+        sh -s -
+      register: k3s_agent_install
+      async: 600
+      poll: 15
+      when: not k3s_binary.stat.exists or k3s_agent_service_status.stdout == 'not-running'
+
+    - name: Display K3s agent installation result
+      debug:
+        var: k3s_agent_install
+      when: k3s_agent_install is defined and k3s_agent_install.changed
+
+    - name: Wait for agent to register with server
+      wait_for:
+        path: /var/lib/rancher/k3s/agent/kubelet.kubeconfig
+        state: present
+        delay: 5
+        timeout: 60
+      ignore_errors: true
+
+    - name: Verify K3s agent service status
+      shell: "systemctl status k3s-agent.service"
+      register: agent_status
+      changed_when: false
+      failed_when: false
+      ignore_errors: true
+
+    - name: Show agent status
+      debug:
+        var: agent_status.stdout_lines
+      when: agent_status is defined
